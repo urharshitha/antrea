@@ -223,6 +223,8 @@ var CommandList = &commandList{
 			aliases:      []string{"addressgroups", "ag"},
 			short:        "Print address groups",
 			long:         "Print address groups in ${component}",
+			example: `Get all the list of addressgroups,sorted by the order of their CreationTimestamp
+  $antctl get addressgroups --sort-by=CreationTimestamp`,
 			commandGroup: get,
 			controllerEndpoint: &endpoint{
 				resourceEndpoint: &resourceEndpoint{
@@ -233,13 +235,14 @@ var CommandList = &commandList{
 			agentEndpoint: &endpoint{
 				nonResourceEndpoint: &nonResourceEndpoint{
 					path: "/addressgroups",
-					params: []flagInfo{
+					params: append([]flagInfo{
 						{
 							usage: "Retrieve resource by name",
 							name:  "name",
 							arg:   true,
 						},
-					},
+					},getSortByFlag()),
+					outputType: multiple,
 				},
 				addonTransform: addressgroup.Transform,
 			},
