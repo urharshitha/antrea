@@ -77,6 +77,9 @@ const (
 	get
 	query
 )
+const (
+	sortBycreationtime string = "CreationTimestamp"
+)
 
 var groupCommands = map[commandGroup]*cobra.Command{
 	get: {
@@ -137,7 +140,7 @@ func getSortByFlag() flagInfo {
 	return flagInfo{
 		name:            "sort-by",
 		defaultValue:    "",
-		supportedValues: []string{sortByEffectivePriority},
+		supportedValues: []string{sortByEffectivePriority, sortBycreationtime},
 		usage:           "Get NetworkPolicies in specific order. Current supported value is effectivePriority.",
 	}
 }
