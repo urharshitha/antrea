@@ -18,6 +18,7 @@ import (
 	"io"
 	"reflect"
 	"sort"
+	"time"
 	"strconv"
 
 	"antrea.io/antrea/pkg/antctl/transform"
@@ -64,6 +65,7 @@ func Transform(reader io.Reader, single bool, opts map[string]string) (interface
 }
 
 const sortByEffectivePriority = "effectivePriority"
+const sortBycreationtime = "CreationTimestamp"
 
 // Compute a tierPriority value in between the application tier and the baseline tier,
 // which can be used to sort all policies by tier.
@@ -100,6 +102,9 @@ func (nps *NPSorter) Less(i, j int) bool {
 			return *pi < *pj
 		}
 		fallthrough
+		case sortBycreationtime:
+
+		return nps.networkPolicies[i].CreationTimestamp.Before(&nps.networkPolicies[j].CreationTimestamp)
 	default:
 		// Do not need a tie-breaker here since NetworkPolicy names are set as UID
 		// of the source policy and will be unique.
