@@ -133,6 +133,12 @@ func (e *resourceEndpoint) flags() []flagInfo {
 	if e.groupVersionResource == &v1beta2.NetworkPolicyVersionResource {
 		flags = append(flags, getSortByFlag())
 	}
+	if e.groupVersionResource == &v1beta2.AddressGroupVersionResource {
+		flags = append(flags, getSortByFlag())
+	}
+	if e.groupVersionResource == &v1beta2.AppliedToGroupVersionResource {
+		flags = append(flags, getSortByFlag())
+	}
 	return flags
 }
 
@@ -141,7 +147,7 @@ func getSortByFlag() flagInfo {
 		name:            "sort-by",
 		defaultValue:    "",
 		supportedValues: []string{sortByEffectivePriority, sortBycreationtime},
-		usage:           "Get NetworkPolicies in specific order. Current supported value is effectivePriority.",
+		usage:           "Get NetworkPolicies in specific order. Current supported value is effectivePriority and CreationTimestamp",
 	}
 }
 
