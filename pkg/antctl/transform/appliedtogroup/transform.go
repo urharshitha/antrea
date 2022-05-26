@@ -18,6 +18,9 @@ import (
 	"io"
 	"reflect"
 
+	"sort"
+	"time"
+
 	"antrea.io/antrea/pkg/antctl/transform"
 	"antrea.io/antrea/pkg/antctl/transform/common"
 	cpv1beta "antrea.io/antrea/pkg/apis/controlplane/v1beta2"
@@ -30,10 +33,19 @@ type Response struct {
 
 func listTransform(l interface{}, opts map[string]string) (interface{}, error) {
 	groups := l.(*cpv1beta.AppliedToGroupList)
-	result := []Response{}
-	for i := range groups.Items {
-		group := groups.Items[i]
-		o, _ := objectTransform(&group, opts)
+	sortBy := ""
+	if sb, ok := opts["sort-by"]; ok {
+		sortBy = sb
+	}
+	apsorter := &Apsorter{
+		appliedtogroups: groups.Items,
+		sortBy:          sortBy,
+	}
+	sort.Sort(apsorter)
+
+	result := make([]Response, 0, len(groups.Items))
+	for i := range apsorter.appliedtogroups {
+		o, _ := objectTransform(&apsorter.appliedtogroups[i], opts)
 		result = append(result, o.(Response))
 	}
 	return result, nil
@@ -56,6 +68,28 @@ func Transform(reader io.Reader, single bool, opts map[string]string) (interface
 		listTransform,
 		opts,
 	)(reader, single)
+}
+
+const sortBycreationtime = "CreationTimestamp"
+
+type TimeSlice []time.Time
+type Apsorter struct {
+	appliedtogroups []cpv1beta.AppliedToGroup
+	sortBy          string
+}
+
+func (aps *Apsorter) Len() int { return len(aps.appliedtogroups) }
+func (aps *Apsorter) Swap(i, j int) {
+	aps.appliedtogroups[i], aps.appliedtogroups[j] = aps.appliedtogroups[j], aps.appliedtogroups[i]
+}
+
+func (aps *Apsorter) Less(i, j int) bool {
+	switch aps.sortBy {
+	case sortBycreationtime:
+		return aps.appliedtogroups[i].CreationTimestamp.Before(&aps.appliedtogroups[j].CreationTimestamp)
+	default:
+		return aps.appliedtogroups[i].Name < aps.appliedtogroups[j].Name
+	}
 }
 
 var _ common.TableOutput = new(Response)

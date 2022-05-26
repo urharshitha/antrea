@@ -138,6 +138,8 @@ var CommandList = &commandList{
   $ antctl get networkpolicy 6001549b-ba63-4752-8267-30f52b4332db
   Get the list of all control plane NetworkPolicies
   $ antctl get networkpolicy
+  Get all the list of appliedtogroups,sorted by the order of their CreationTimestamp
+  $antctl get appliedtogroups --sort-by=CreationTimestamp
   Get the list of all control plane NetworkPolicies, sorted by the order in which the policies are evaluated.
   $ antctl get networkpolicy --sort-by=effectivePriority
   Get the control plane NetworkPolicy with a specific source (supported by agent only)
@@ -192,10 +194,12 @@ var CommandList = &commandList{
 			transformedResponse: reflect.TypeOf(networkpolicy.Response{}),
 		},
 		{
-			use:          "appliedtogroup",
-			aliases:      []string{"appliedtogroups", "atg"},
-			short:        "Print appliedto groups",
-			long:         "Print appliedto groups in ${component}",
+			use:     "appliedtogroup",
+			aliases: []string{"appliedtogroups", "atg"},
+			short:   "Print appliedto groups",
+			long:    "Print appliedto groups in ${component}",
+			example: `Get all the list of appliedtogroups,sorted by the order of their CreationTimestamp
+  $antctl get appliedtogroups --sort-by=CreationTimestamp`,
 			commandGroup: get,
 			controllerEndpoint: &endpoint{
 				resourceEndpoint: &resourceEndpoint{
@@ -206,23 +210,26 @@ var CommandList = &commandList{
 			agentEndpoint: &endpoint{
 				nonResourceEndpoint: &nonResourceEndpoint{
 					path: "/appliedtogroups",
-					params: []flagInfo{
+					params: append([]flagInfo{
 						{
 							usage: "Retrieve resource by name",
 							name:  "name",
 							arg:   true,
 						},
-					},
+					}, getSortByFlag()),
+					outputType: multiple,
 				},
 				addonTransform: appliedtogroup.Transform,
 			},
 			transformedResponse: reflect.TypeOf(appliedtogroup.Response{}),
 		},
 		{
-			use:          "addressgroup",
-			aliases:      []string{"addressgroups", "ag"},
-			short:        "Print address groups",
-			long:         "Print address groups in ${component}",
+			use:     "addressgroup",
+			aliases: []string{"addressgroups", "ag"},
+			short:   "Print address groups",
+			long:    "Print address groups in ${component}",
+			example: `Get all the list of addressgroups,sorted by the order of their CreationTimestamp
+  $antctl get addressgroups --sort-by=CreationTimestamp`,
 			commandGroup: get,
 			controllerEndpoint: &endpoint{
 				resourceEndpoint: &resourceEndpoint{
@@ -233,13 +240,14 @@ var CommandList = &commandList{
 			agentEndpoint: &endpoint{
 				nonResourceEndpoint: &nonResourceEndpoint{
 					path: "/addressgroups",
-					params: []flagInfo{
+					params: append([]flagInfo{
 						{
 							usage: "Retrieve resource by name",
 							name:  "name",
 							arg:   true,
 						},
-					},
+					}, getSortByFlag()),
+					outputType: multiple,
 				},
 				addonTransform: addressgroup.Transform,
 			},

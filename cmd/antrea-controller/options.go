@@ -44,6 +44,7 @@ type Options struct {
 	configFile string
 	// The configuration object
 	config *controllerconfig.ControllerConfig
+	Sort   bool
 }
 
 func newOptions() *Options {
@@ -54,16 +55,31 @@ func newOptions() *Options {
 
 // addFlags adds flags to fs and binds them to options.
 func (o *Options) addFlags(fs *pflag.FlagSet) {
+
 	fs.StringVar(&o.configFile, "config", o.configFile, "The path to the configuration file")
 }
 
 // complete completes all the required options.
-func (o *Options) complete(args []string) error {
+/*func (o *Options) complete(args []string) error {
 	if len(o.configFile) > 0 {
 		if err := o.loadConfigFromFile(); err != nil {
 			return err
 		}
 	}
+
+	return features.DefaultMutableFeatureGate.SetFromMap(o.config.FeatureGates)
+}*/
+func (o *Options) complete(fs *pflag.FlagSet, args []string) error {
+	if len(o.configFile) > 0 {
+		if err := o.loadConfigFromFile(); err != nil {
+			return err
+		}
+	}
+	sortBy, err := fs.GetString("sort-by")
+	if err != nil {
+		return err
+	}
+	o.Sort = len(sortBy) > 0
 	o.setDefaults()
 	return features.DefaultMutableFeatureGate.SetFromMap(o.config.FeatureGates)
 }
