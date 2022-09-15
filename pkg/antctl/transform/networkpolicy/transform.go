@@ -29,6 +29,11 @@ type Response struct {
 	*cpv1beta.NetworkPolicy
 }
 
+type NPSorter struct {
+	NetworkPolicies []cpv1beta.NetworkPolicy
+	SortBy          string
+}
+
 func priorityToString(p interface{}) string {
 	if reflect.ValueOf(p).IsNil() {
 		return ""
