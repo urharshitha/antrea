@@ -46,8 +46,16 @@ const (
 )
 
 const (
-	maxTableOutputColumnLength int    = 50
-	sortByEffectivePriority    string = "effectivePriority"
+	sortByEffectivePriority string = "effectivePriority"
+)
+const (
+	sortBycreationtime string = ".metadata.creationTimestamp"
+)
+const (
+	sortByName string = ".metadata.name"
+)
+const (
+	sortByrestartCount string = ".status.containerStatuses[0].restartcount"
 )
 
 // commandGroup is used to group commands, it could be specified in commandDefinition.
@@ -76,9 +84,6 @@ const (
 	flat commandGroup = iota
 	get
 	query
-)
-const (
-	sortBycreationtime string = "CreationTimestamp"
 )
 
 var groupCommands = map[commandGroup]*cobra.Command{
@@ -146,8 +151,8 @@ func getSortByFlag() flagInfo {
 	return flagInfo{
 		name:            "sort-by",
 		defaultValue:    "",
-		supportedValues: []string{sortByEffectivePriority, sortBycreationtime},
-		usage:           "Get NetworkPolicies in specific order. Current supported value is effectivePriority and CreationTimestamp",
+		supportedValues: []string{sortByEffectivePriority, sortBycreationtime, sortByName, sortByrestartCount},
+		usage:           "Get NetworkPolicies in specific order. Current supported value is effectivePriority. Get Addressgroups in specific order .Current supported value is CreationTimestamp.Get Appliedtogroups in specific order .Current supported value is CreationTimestamp",
 	}
 }
 
