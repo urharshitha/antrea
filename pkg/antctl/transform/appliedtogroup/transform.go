@@ -14,11 +14,10 @@
 
 package appliedtogroup
 
-import (
-	"io"
-	"reflect"
-
-	"antrea.io/antrea/pkg/antctl/transform"
+import ( //"io"
+	//"reflect"
+	//"sort"
+	//"antrea.io/antrea/pkg/antctl/transform"
 	"antrea.io/antrea/pkg/antctl/transform/common"
 	cpv1beta "antrea.io/antrea/pkg/apis/controlplane/v1beta2"
 )
@@ -28,35 +27,11 @@ type Response struct {
 	Pods []common.GroupMember `json:"pods,omitempty"`
 }
 
-func listTransform(l interface{}, opts map[string]string) (interface{}, error) {
-	groups := l.(*cpv1beta.AppliedToGroupList)
-	result := []Response{}
-	for i := range groups.Items {
-		group := groups.Items[i]
-		o, _ := objectTransform(&group, opts)
-		result = append(result, o.(Response))
-	}
-	return result, nil
+type Apsorter struct {
+	Appliedtogroups []cpv1beta.AppliedToGroup
+	SortBy          string
 }
 
-func objectTransform(o interface{}, _ map[string]string) (interface{}, error) {
-	group := o.(*cpv1beta.AppliedToGroup)
-	var pods []common.GroupMember
-	for _, pod := range group.GroupMembers {
-		pods = append(pods, common.GroupMemberTransform(pod))
-	}
-	return Response{Name: group.GetName(), Pods: pods}, nil
-}
-
-func Transform(reader io.Reader, single bool, opts map[string]string) (interface{}, error) {
-	return transform.GenericFactory(
-		reflect.TypeOf(cpv1beta.AppliedToGroup{}),
-		reflect.TypeOf(cpv1beta.AppliedToGroupList{}),
-		objectTransform,
-		listTransform,
-		opts,
-	)(reader, single)
-}
 
 var _ common.TableOutput = new(Response)
 
