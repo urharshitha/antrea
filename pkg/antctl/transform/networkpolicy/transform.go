@@ -15,101 +15,18 @@
 package networkpolicy
 
 import (
-	"io"
+	//"io"
 	"reflect"
-	"sort"
-	"time"
+	//"sort"
 	"strconv"
 
-	"antrea.io/antrea/pkg/antctl/transform"
+	//"antrea.io/antrea/pkg/antctl/transform"
 	"antrea.io/antrea/pkg/antctl/transform/common"
 	cpv1beta "antrea.io/antrea/pkg/apis/controlplane/v1beta2"
-	"antrea.io/antrea/pkg/controller/networkpolicy"
 )
 
 type Response struct {
 	*cpv1beta.NetworkPolicy
-}
-
-func objectTransform(o interface{}, _ map[string]string) (interface{}, error) {
-	return Response{o.(*cpv1beta.NetworkPolicy)}, nil
-}
-
-func listTransform(l interface{}, opts map[string]string) (interface{}, error) {
-	policyList := l.(*cpv1beta.NetworkPolicyList)
-	sortBy := ""
-	if sb, ok := opts["sort-by"]; ok {
-		sortBy = sb
-	}
-	npSorter := &NPSorter{
-		networkPolicies: policyList.Items,
-		sortBy:          sortBy,
-	}
-	sort.Sort(npSorter)
-	result := make([]Response, 0, len(policyList.Items))
-	for i := range npSorter.networkPolicies {
-		o, _ := objectTransform(&npSorter.networkPolicies[i], opts)
-		result = append(result, o.(Response))
-	}
-	return result, nil
-}
-
-func Transform(reader io.Reader, single bool, opts map[string]string) (interface{}, error) {
-	return transform.GenericFactory(
-		reflect.TypeOf(cpv1beta.NetworkPolicy{}),
-		reflect.TypeOf(cpv1beta.NetworkPolicyList{}),
-		objectTransform,
-		listTransform,
-		opts,
-	)(reader, single)
-}
-
-const sortByEffectivePriority = "effectivePriority"
-const sortBycreationtime = "CreationTimestamp"
-
-// Compute a tierPriority value in between the application tier and the baseline tier,
-// which can be used to sort all policies by tier.
-var effectiveTierPriorityK8sNP = (networkpolicy.DefaultTierPriority + networkpolicy.BaselineTierPriority) / 2
-
-type NPSorter struct {
-	networkPolicies []cpv1beta.NetworkPolicy
-	sortBy          string
-}
-
-func (nps *NPSorter) Len() int { return len(nps.networkPolicies) }
-func (nps *NPSorter) Swap(i, j int) {
-	nps.networkPolicies[i], nps.networkPolicies[j] = nps.networkPolicies[j], nps.networkPolicies[i]
-}
-func (nps *NPSorter) Less(i, j int) bool {
-	switch nps.sortBy {
-	case sortByEffectivePriority:
-		var ti, tj int32
-		if nps.networkPolicies[i].TierPriority == nil {
-			ti = effectiveTierPriorityK8sNP
-		} else {
-			ti = *nps.networkPolicies[i].TierPriority
-		}
-		if nps.networkPolicies[j].TierPriority == nil {
-			tj = effectiveTierPriorityK8sNP
-		} else {
-			tj = *nps.networkPolicies[j].TierPriority
-		}
-		if ti != tj {
-			return ti < tj
-		}
-		pi, pj := nps.networkPolicies[i].Priority, nps.networkPolicies[j].Priority
-		if pi != nil && pj != nil && *pi != *pj {
-			return *pi < *pj
-		}
-		fallthrough
-		case sortBycreationtime:
-
-		return nps.networkPolicies[i].CreationTimestamp.Before(&nps.networkPolicies[j].CreationTimestamp)
-	default:
-		// Do not need a tie-breaker here since NetworkPolicy names are set as UID
-		// of the source policy and will be unique.
-		return nps.networkPolicies[i].Name < nps.networkPolicies[j].Name
-	}
 }
 
 func priorityToString(p interface{}) string {
