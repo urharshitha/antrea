@@ -14,90 +14,33 @@
 
 package addressgroup
 
-import (
-	"io"
-	"reflect"
-	"sort"
-	"time"
-
-	"antrea.io/antrea/pkg/antctl/transform"
+import ( //"io"
+	//"reflect"
+	//"sort"
+	//"antrea.io/antrea/pkg/antctl/transform"
 	"antrea.io/antrea/pkg/antctl/transform/common"
 	cpv1beta "antrea.io/antrea/pkg/apis/controlplane/v1beta2"
 )
 
 type Response struct {
-	Name string               `json:"name" yaml:"name"`
-	Pods []common.GroupMember `json:"pods,omitempty"`
+	Name  string               `json:"name" yaml:"name"`
+	Pods  []common.GroupMember `json:"pods,omitempty"`
+	Nodes []common.GroupMember `json:"nodes,omitempty"`
 }
 
-func listTransform(l interface{}, opts map[string]string) (interface{}, error) {
-	groups := l.(*cpv1beta.AddressGroupList)
-	sortBy := ""
-	if sb, ok := opts["sort-by"]; ok {
-		sortBy = sb
-	}
-	adsorter := &Adsorter{
-		addressgroups: groups.Items,
-		sortBy:        sortBy,
-	}
-	sort.Sort(adsorter)
 
-	result := make([]Response, 0, len(groups.Items))
-	for i := range adsorter.addressgroups {
-		o, _ := objectTransform(&adsorter.addressgroups[i], opts)
-		result = append(result, o.(Response))
-	}
-	return result, nil
-}
-
-func objectTransform(o interface{}, _ map[string]string) (interface{}, error) {
-	group := o.(*cpv1beta.AddressGroup)
-	var pods []common.GroupMember
-	for _, pod := range group.GroupMembers {
-		pods = append(pods, common.GroupMemberPodTransform(pod))
-	}
-	return Response{Name: group.Name, Pods: pods}, nil
-}
-
-func Transform(reader io.Reader, single bool, opts map[string]string) (interface{}, error) {
-	return transform.GenericFactory(
-		reflect.TypeOf(cpv1beta.AddressGroup{}),
-		reflect.TypeOf(cpv1beta.AddressGroupList{}),
-		objectTransform,
-		listTransform,
-		opts,
-	)(reader, single)
-}
-
-const sortBycreationtime = "CreationTimestamp"
-
-type TimeSlice []time.Time
 type Adsorter struct {
-	addressgroups []cpv1beta.AddressGroup
-	sortBy        string
-}
-
-func (ads *Adsorter) Len() int { return len(ads.addressgroups) }
-func (ads *Adsorter) Swap(i, j int) {
-	ads.addressgroups[i].CreationTimestamp, ads.addressgroups[j].CreationTimestamp = ads.addressgroups[j].CreationTimestamp, ads.addressgroups[i].CreationTimestamp
-}
-
-func (ads *Adsorter) Less(i, j int) bool {
-	switch ads.sortBy {
-	case sortBycreationtime:
-		return ads.addressgroups[i].CreationTimestamp.Before(&ads.addressgroups[j].CreationTimestamp)
-	default:
-		return ads.addressgroups[i].Name < ads.addressgroups[j].Name
-	}
+	Addressgroups []cpv1beta.AddressGroup
+	SortBy        string
 }
 
 var _ common.TableOutput = new(Response)
 
 func (r Response) GetTableHeader() []string {
-	return []string{"NAME", "POD-IPS"}
+	return []string{"NAME", "POD-IPS", "NODE-IPS"}
 }
 
-func (r Response) GetPodNames(maxColumnLength int) string {
+func (r Response) GetPodIPs(maxColumnLength int) string {
 	list := make([]string, len(r.Pods))
 	for i, pod := range r.Pods {
 		list[i] = pod.IP
@@ -105,10 +48,18 @@ func (r Response) GetPodNames(maxColumnLength int) string {
 	return common.GenerateTableElementWithSummary(list, maxColumnLength)
 }
 
+func (r Response) GetNodeIPs(maxColumnLength int) string {
+	list := make([]string, len(r.Nodes))
+	for i, node := range r.Nodes {
+		list[i] = node.IP
+	}
+	return common.GenerateTableElementWithSummary(list, maxColumnLength)
+}
+
 func (r Response) GetTableRow(maxColumnLength int) []string {
-	return []string{r.Name, r.GetPodNames(maxColumnLength)}
+	return []string{r.Name, r.GetPodIPs(maxColumnLength), r.GetNodeIPs(maxColumnLength)}
 }
 
 func (r Response) SortRows() bool {
 	return true
-}
+}c
