@@ -108,6 +108,18 @@ func toAntreaServicesForCRD(npPorts []v1alpha1.NetworkPolicyPort, npProtocols []
 	return antreaServices, namedPortExists
 }
 
+// toAntreaL7ProtocolsForCRD converts a slice of v1alpha1.L7Protocol objects to
+// a slice of Antrea L7Protocol objects.
+func toAntreaL7ProtocolsForCRD(l7Protocols []v1alpha1.L7Protocol) []controlplane.L7Protocol {
+	var antreaL7Protocols []controlplane.L7Protocol
+	for _, l7p := range l7Protocols {
+		antreaL7Protocols = append(antreaL7Protocols, controlplane.L7Protocol{
+			HTTP: (*controlplane.HTTPProtocol)(l7p.HTTP),
+		})
+	}
+	return antreaL7Protocols
+}
+
 // toAntreaIPBlockForCRD converts a v1alpha1.IPBlock to an Antrea IPBlock.
 func toAntreaIPBlockForCRD(ipBlock *v1alpha1.IPBlock) (*controlplane.IPBlock, error) {
 	// Convert the allowed IPBlock to networkpolicy.IPNet.
@@ -149,10 +161,13 @@ func (n *NetworkPolicyController) toAntreaPeerForCRD(peers []v1alpha1.NetworkPol
 	}
 	var ipBlocks []controlplane.IPBlock
 	var fqdns []string
+	var clusterSetScopeSelectors []*antreatypes.GroupSelector
 	for _, peer := range peers {
-		// A v1alpha1.NetworkPolicyPeer will either have an IPBlock or FQDNs or a
-		// podSelector and/or namespaceSelector set or a reference to the
-		// ClusterGroup.
+		// A v1alpha1.NetworkPolicyPeer will have exactly one of the following fields set:
+		// - podSelector and/or namespaceSelector (in-cluster scope or ClusterSet scope)
+		// - reference to a Group/ClusterGroup
+		// - IPBlocks
+		// - FQDNs
 		if peer.IPBlock != nil {
 			ipBlock, err := toAntreaIPBlockForCRD(peer.IPBlock)
 			if err != nil {
@@ -174,12 +189,18 @@ func (n *NetworkPolicyController) toAntreaPeerForCRD(peers []v1alpha1.NetworkPol
 		} else if peer.NodeSelector != nil {
 			addressGroup := n.createAddressGroup("", nil, nil, nil, peer.NodeSelector)
 			addressGroups = append(addressGroups, addressGroup)
+		} else if peer.Scope == v1alpha1.ScopeClusterSet {
+			clusterSetScopeSelectors = append(clusterSetScopeSelectors, antreatypes.NewGroupSelector(np.GetNamespace(), peer.PodSelector, peer.NamespaceSelector, nil, nil))
 		} else {
 			addressGroup := n.createAddressGroup(np.GetNamespace(), peer.PodSelector, peer.NamespaceSelector, peer.ExternalEntitySelector, nil)
 			addressGroups = append(addressGroups, addressGroup)
 		}
 	}
-	return &controlplane.NetworkPolicyPeer{AddressGroups: getAddressGroupNames(addressGroups), IPBlocks: ipBlocks, FQDNs: fqdns}, addressGroups
+	var labelIdentities []uint32
+	if n.multiclusterEnabled {
+		labelIdentities = n.labelIdentityInterface.SetPolicySelectors(clusterSetScopeSelectors, internalNetworkPolicyKeyFunc(np))
+	}
+	return &controlplane.NetworkPolicyPeer{AddressGroups: getAddressGroupNames(addressGroups), IPBlocks: ipBlocks, FQDNs: fqdns, LabelIdentities: labelIdentities}, addressGroups
 }
 
 // toNamespacedPeerForCRD creates an Antrea controlplane NetworkPolicyPeer for crdv1alpha1 NetworkPolicyPeer

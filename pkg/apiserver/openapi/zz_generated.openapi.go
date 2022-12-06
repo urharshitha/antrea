@@ -47,8 +47,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.GroupAssociation":                  schema_pkg_apis_controlplane_v1beta2_GroupAssociation(ref),
 		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.GroupMember":                       schema_pkg_apis_controlplane_v1beta2_GroupMember(ref),
 		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.GroupReference":                    schema_pkg_apis_controlplane_v1beta2_GroupReference(ref),
+		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.HTTPProtocol":                      schema_pkg_apis_controlplane_v1beta2_HTTPProtocol(ref),
 		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.IPBlock":                           schema_pkg_apis_controlplane_v1beta2_IPBlock(ref),
 		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.IPNet":                             schema_pkg_apis_controlplane_v1beta2_IPNet(ref),
+		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.L7Protocol":                        schema_pkg_apis_controlplane_v1beta2_L7Protocol(ref),
 		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.MulticastGroupInfo":                schema_pkg_apis_controlplane_v1beta2_MulticastGroupInfo(ref),
 		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.NamedPort":                         schema_pkg_apis_controlplane_v1beta2_NamedPort(ref),
 		"antrea.io/antrea/pkg/apis/controlplane/v1beta2.NetworkPolicy":                     schema_pkg_apis_controlplane_v1beta2_NetworkPolicy(ref),
@@ -1159,6 +1161,40 @@ func schema_pkg_apis_controlplane_v1beta2_GroupReference(ref common.ReferenceCal
 	}
 }
 
+func schema_pkg_apis_controlplane_v1beta2_HTTPProtocol(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HTTPProtocol matches HTTP requests with specific host, method, and path. All fields could be used alone or together. If all fields are not provided, it matches all HTTP requests.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"host": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Host represents the hostname present in the URI or the HTTP Host header to match. It does not contain the port associated with the host.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"method": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Method represents the HTTP method to match. It could be GET, POST, PUT, HEAD, DELETE, TRACE, OPTIONS, CONNECT and PATCH.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"path": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Path represents the URI path to match (Ex. \"/index.html\", \"/admin\").",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_pkg_apis_controlplane_v1beta2_IPBlock(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -1218,6 +1254,26 @@ func schema_pkg_apis_controlplane_v1beta2_IPNet(ref common.ReferenceCallback) co
 				},
 			},
 		},
+	}
+}
+
+func schema_pkg_apis_controlplane_v1beta2_L7Protocol(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "L7Protocol defines application layer protocol to match.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"http": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("antrea.io/antrea/pkg/apis/controlplane/v1beta2.HTTPProtocol"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"antrea.io/antrea/pkg/apis/controlplane/v1beta2.HTTPProtocol"},
 	}
 }
 
@@ -1532,6 +1588,21 @@ func schema_pkg_apis_controlplane_v1beta2_NetworkPolicyPeer(ref common.Reference
 							},
 						},
 					},
+					"labelIdentities": {
+						SchemaProps: spec.SchemaProps{
+							Description: "A list of labelIdentities selected as ingress peers for stretched policy. This field can only be possibly set for NetworkPolicyPeer of ingress rules.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: 0,
+										Type:    []string{"integer"},
+										Format:  "int64",
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -1666,12 +1737,26 @@ func schema_pkg_apis_controlplane_v1beta2_NetworkPolicyRule(ref common.Reference
 							Format:      "",
 						},
 					},
+					"l7Protocols": {
+						SchemaProps: spec.SchemaProps{
+							Description: "L7Protocols is a list of application layer protocols which should be matched.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("antrea.io/antrea/pkg/apis/controlplane/v1beta2.L7Protocol"),
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"enableLogging"},
 			},
 		},
 		Dependencies: []string{
-			"antrea.io/antrea/pkg/apis/controlplane/v1beta2.NetworkPolicyPeer", "antrea.io/antrea/pkg/apis/controlplane/v1beta2.Service"},
+			"antrea.io/antrea/pkg/apis/controlplane/v1beta2.L7Protocol", "antrea.io/antrea/pkg/apis/controlplane/v1beta2.NetworkPolicyPeer", "antrea.io/antrea/pkg/apis/controlplane/v1beta2.Service"},
 	}
 }
 
@@ -2246,14 +2331,15 @@ func schema_pkg_apis_crd_v1beta1_AgentCondition(ref common.ReferenceCallback) co
 				Properties: map[string]spec.Schema{
 					"type": {
 						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
+							Description: "One of the AgentConditionType listed above",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
-							Description: "One of the AgentConditionType listed above",
+							Description: "Mark certain type status, one of True, False, Unknown",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -2261,21 +2347,21 @@ func schema_pkg_apis_crd_v1beta1_AgentCondition(ref common.ReferenceCallback) co
 					},
 					"lastHeartbeatTime": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Mark certain type status, one of True, False, Unknown",
+							Description: "The timestamp when AntreaAgentInfo is created/updated, ideally heartbeat interval is 60s",
 							Default:     map[string]interface{}{},
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
 					"reason": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The timestamp when AntreaAgentInfo is created/updated, ideally heartbeat interval is 60s",
+							Description: "Brief reason",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"message": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Brief reason",
+							Description: "Human readable message indicating details",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -2317,27 +2403,28 @@ func schema_pkg_apis_crd_v1beta1_AntreaAgentInfo(ref common.ReferenceCallback) c
 					},
 					"version": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "Antrea binary version",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"podRef": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Antrea binary version",
-							Default:     map[string]interface{}{},
-							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
-						},
-					},
-					"nodeRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The Pod that Antrea Agent is running in",
 							Default:     map[string]interface{}{},
 							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
 						},
 					},
-					"nodeSubnets": {
+					"nodeRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The Node that Antrea Agent is running in",
+							Default:     map[string]interface{}{},
+							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
+						},
+					},
+					"nodeSubnets": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Node subnets",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -2352,28 +2439,28 @@ func schema_pkg_apis_crd_v1beta1_AntreaAgentInfo(ref common.ReferenceCallback) c
 					},
 					"ovsInfo": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Node subnets",
+							Description: "OVS Information",
 							Default:     map[string]interface{}{},
 							Ref:         ref("antrea.io/antrea/pkg/apis/crd/v1beta1.OVSInfo"),
 						},
 					},
 					"networkPolicyControllerInfo": {
 						SchemaProps: spec.SchemaProps{
-							Description: "OVS Information",
+							Description: "Antrea Agent NetworkPolicy information",
 							Default:     map[string]interface{}{},
 							Ref:         ref("antrea.io/antrea/pkg/apis/crd/v1beta1.NetworkPolicyControllerInfo"),
 						},
 					},
 					"localPodNum": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Antrea Agent NetworkPolicy information",
+							Description: "The number of Pods which the agent is in charge of",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
 					},
 					"agentConditions": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The number of Pods which the agent is in charge of",
+							Description: "Agent condition contains types like AgentHealthy",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -2387,7 +2474,7 @@ func schema_pkg_apis_crd_v1beta1_AntreaAgentInfo(ref common.ReferenceCallback) c
 					},
 					"apiPort": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Agent condition contains types like AgentHealthy",
+							Description: "The port of antrea agent API Server",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
@@ -2476,48 +2563,49 @@ func schema_pkg_apis_crd_v1beta1_AntreaControllerInfo(ref common.ReferenceCallba
 					},
 					"version": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "Antrea binary version",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"podRef": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Antrea binary version",
-							Default:     map[string]interface{}{},
-							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
-						},
-					},
-					"nodeRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The Pod that Antrea Controller is running in",
 							Default:     map[string]interface{}{},
 							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
 						},
 					},
-					"serviceRef": {
+					"nodeRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The Node that Antrea Controller is running in",
 							Default:     map[string]interface{}{},
 							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
 						},
 					},
-					"networkPolicyControllerInfo": {
+					"serviceRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Antrea Controller Service",
+							Default:     map[string]interface{}{},
+							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
+						},
+					},
+					"networkPolicyControllerInfo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Antrea Controller NetworkPolicy information",
 							Default:     map[string]interface{}{},
 							Ref:         ref("antrea.io/antrea/pkg/apis/crd/v1beta1.NetworkPolicyControllerInfo"),
 						},
 					},
 					"connectedAgentNum": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Antrea Controller NetworkPolicy information",
+							Description: "Number of agents which are connected to this controller",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
 					},
 					"controllerConditions": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Number of agents which are connected to this controller",
+							Description: "Controller condition contains types like ControllerHealthy",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -2531,7 +2619,7 @@ func schema_pkg_apis_crd_v1beta1_AntreaControllerInfo(ref common.ReferenceCallba
 					},
 					"apiPort": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Controller condition contains types like ControllerHealthy",
+							Description: "The port of antrea controller API Server",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
@@ -2600,14 +2688,15 @@ func schema_pkg_apis_crd_v1beta1_ControllerCondition(ref common.ReferenceCallbac
 				Properties: map[string]spec.Schema{
 					"type": {
 						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
+							Description: "One of the ControllerConditionType listed above, controllerHealthy",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
-							Description: "One of the ControllerConditionType listed above, controllerHealthy",
+							Description: "Mark certain type status, one of True, False, Unknown",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -2615,21 +2704,21 @@ func schema_pkg_apis_crd_v1beta1_ControllerCondition(ref common.ReferenceCallbac
 					},
 					"lastHeartbeatTime": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Mark certain type status, one of True, False, Unknown",
+							Description: "The timestamp when AntreaControllerInfo is created/updated, ideally heartbeat interval is 60s",
 							Default:     map[string]interface{}{},
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
 					"reason": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The timestamp when AntreaControllerInfo is created/updated, ideally heartbeat interval is 60s",
+							Description: "Brief reason",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"message": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Brief reason",
+							Description: "Human readable message indicating details",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -2693,7 +2782,8 @@ func schema_pkg_apis_crd_v1beta1_OVSInfo(ref common.ReferenceCallback) common.Op
 					},
 					"flowTable": {
 						SchemaProps: spec.SchemaProps{
-							Type: []string{"object"},
+							Description: "Key: flow table name, Value: flow number",
+							Type:        []string{"object"},
 							AdditionalProperties: &spec.SchemaOrBool{
 								Allows: true,
 								Schema: &spec.Schema{

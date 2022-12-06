@@ -256,6 +256,8 @@ type NetworkPolicyRule struct {
 	// Name describes the intention of this rule.
 	// Name should be unique within the policy.
 	Name string `json:"name,omitempty" protobuf:"bytes,9,opt,name=name"`
+	// L7Protocols is a list of application layer protocols which should be matched.
+	L7Protocols []L7Protocol `json:"l7Protocols,omitempty" protobuf:"bytes,10,rep,name=l7Protocols"`
 }
 
 // Protocol defines network protocols supported for things like container ports.
@@ -300,6 +302,24 @@ type Service struct {
 	GroupAddress string `json:"groupAddress,omitempty" protobuf:"bytes,7,opt,name=groupAddress"`
 }
 
+// L7Protocol defines application layer protocol to match.
+type L7Protocol struct {
+	HTTP *HTTPProtocol `json:"http,omitempty" protobuf:"bytes,1,opt,name=http"`
+}
+
+// HTTPProtocol matches HTTP requests with specific host, method, and path. All fields could be used alone or together.
+// If all fields are not provided, it matches all HTTP requests.
+type HTTPProtocol struct {
+	// Host represents the hostname present in the URI or the HTTP Host header to match.
+	// It does not contain the port associated with the host.
+	Host string `json:"host,omitempty" protobuf:"bytes,1,opt,name=host"`
+	// Method represents the HTTP method to match.
+	// It could be GET, POST, PUT, HEAD, DELETE, TRACE, OPTIONS, CONNECT and PATCH.
+	Method string `json:"method,omitempty" protobuf:"bytes,2,opt,name=method"`
+	// Path represents the URI path to match (Ex. "/index.html", "/admin").
+	Path string `json:"path,omitempty" protobuf:"bytes,3,opt,name=path"`
+}
+
 // NetworkPolicyPeer describes a peer of NetworkPolicyRules.
 // It could be a list of names of AddressGroups and/or a list of IPBlock.
 type NetworkPolicyPeer struct {
@@ -313,6 +333,9 @@ type NetworkPolicyPeer struct {
 	// A list of ServiceReference.
 	// This field can only be possibly set for NetworkPolicyPeer of egress rules.
 	ToServices []ServiceReference `json:"toServices,omitempty" protobuf:"bytes,4,rep,name=toServices"`
+	// A list of labelIdentities selected as ingress peers for stretched policy.
+	// This field can only be possibly set for NetworkPolicyPeer of ingress rules.
+	LabelIdentities []uint32 `json:"labelIdentities,omitempty" protobuf:"bytes,5,rep,name=labelIdentities"`
 }
 
 // IPBlock describes a particular CIDR (Ex. "192.168.1.1/24"). The except entry describes CIDRs that should
