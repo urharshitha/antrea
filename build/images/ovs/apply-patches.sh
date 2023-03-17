@@ -99,8 +99,15 @@ if version_lt "$OVS_VERSION" "2.18.0" ; then
     apply_patch "78ff3961ca9fb012eaaca3d3af1e8186fe1827e7"
 fi
 
+# This patch fixes the issue that TCP port matching and TCP flags matching can't
+# take effect when using together.
+# See https://github.com/openvswitch/ovs-issues/issues/272
+if version_get "$OVS_VERSION" "2.13.0" && version_let "$OVS_VERSION" "2.17.3" ; then
+    apply_patch "489553b1c21692063931a9f50b6849b23128443c"
+fi
+
 # OVS hardcodes the installation path to /usr/lib/python3.7/dist-packages/ but this location
-# does not seem to be in the Python path in Ubuntu 20.04. There may be a better way to do this,
+# does not seem to be in the Python path in Ubuntu 22.04. There may be a better way to do this,
 # but this seems like an acceptable workaround.
-sed -i 's/python3\.7/python3\.8/' debian/openvswitch-test.install
-sed -i 's/python3\.7/python3\.8/' debian/python3-openvswitch.install
+sed -i 's/python3\.7/python3\.10/' debian/openvswitch-test.install
+sed -i 's/python3\.7/python3\.10/' debian/python3-openvswitch.install

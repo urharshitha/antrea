@@ -40,7 +40,6 @@ func TestNewInterfaceStore(t *testing.T) {
 	t.Run("testGatewayInterface", testGatewayInterface)
 	t.Run("testTunnelInterface", testTunnelInterface)
 	t.Run("testUplinkInterface", testUplinkInterface)
-	t.Run("testTrafficControlInterface", testTrafficControlInterface)
 	t.Run("testExternalEntityInterface", testEntityInterface)
 }
 
@@ -89,7 +88,7 @@ func testContainerInterface(t *testing.T) {
 }
 
 func testGatewayInterface(t *testing.T) {
-	gatewayInterface := NewGatewayInterface("antrea-gw0")
+	gatewayInterface := NewGatewayInterface("antrea-gw0", util.GenerateRandomMAC())
 	gatewayInterface.IPs = []net.IP{gwIP}
 	gatewayInterface.OVSPortConfig = &OVSPortConfig{
 		OFPort:   13,
@@ -140,14 +139,16 @@ func testTunnelInterface(t *testing.T) {
 	assert.False(t, exists)
 
 	ifaceNames := store.GetInterfaceKeysByType(TunnelInterface)
-	assert.Equal(t, 2, len(ifaceNames))
+	assert.Equal(t, 1, len(ifaceNames))
+	ipsecIfaceNames := store.GetInterfaceKeysByType(IPSecTunnelInterface)
+	assert.Equal(t, 1, len(ipsecIfaceNames))
 	store.DeleteInterface(ipsecTunnelInterface)
-	assert.Equal(t, 1, len(store.GetInterfaceKeysByType(TunnelInterface)))
+	assert.Equal(t, 0, len(store.GetInterfaceKeysByType(IPSecTunnelInterface)))
 	_, exists = store.GetInterfaceByName(ipsecTunnelInterface.InterfaceName)
 	assert.False(t, exists)
 	store.AddInterface(ipsecTunnelInterface)
-	ifaceNames = store.GetInterfaceKeysByType(TunnelInterface)
-	assert.Equal(t, 2, len(ifaceNames))
+	ifaceNames = store.GetInterfaceKeysByType(IPSecTunnelInterface)
+	assert.Equal(t, 1, len(ifaceNames))
 	_, exists = store.GetInterfaceByName(ipsecTunnelInterface.InterfaceName)
 	assert.True(t, exists)
 }
@@ -160,16 +161,6 @@ func testUplinkInterface(t *testing.T) {
 		PortUUID: "1234567890",
 	}
 	testGeneralInterface(t, uplinkInterface, UplinkInterface)
-}
-
-func testTrafficControlInterface(t *testing.T) {
-	tcInterface := NewTrafficControlInterface("tc0")
-	tcInterface.IPs = []net.IP{hostIP}
-	tcInterface.OVSPortConfig = &OVSPortConfig{
-		OFPort:   17,
-		PortUUID: "1234567890",
-	}
-	testGeneralInterface(t, tcInterface, TrafficControlInterface)
 }
 
 func testEntityInterface(t *testing.T) {

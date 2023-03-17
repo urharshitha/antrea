@@ -391,6 +391,7 @@ type OFEntryOperations interface {
 	BundleOps(adds []binding.Flow, mods []binding.Flow, dels []binding.Flow) error
 	DeleteAll(flows []binding.Flow) error
 	AddOFEntries(ofEntries []binding.OFEntry) error
+	ModifyOFEntries(ofEntries []binding.OFEntry) error
 	DeleteOFEntries(ofEntries []binding.OFEntry) error
 }
 
@@ -404,6 +405,7 @@ type client struct {
 	enableProxy           bool
 	proxyAll              bool
 	enableAntreaPolicy    bool
+	enableL7NetworkPolicy bool
 	enableDenyTracking    bool
 	enableEgress          bool
 	enableMulticast       bool
@@ -433,11 +435,12 @@ type client struct {
 	// enables convenient mocking in unit tests.
 	ofEntryOperations OFEntryOperations
 	// replayMutex provides exclusive access to the OFSwitch to the ReplayFlows method.
-	replayMutex   sync.RWMutex
-	nodeConfig    *config.NodeConfig
-	networkConfig *config.NetworkConfig
-	egressConfig  *config.EgressConfig
-	serviceConfig *config.ServiceConfig
+	replayMutex           sync.RWMutex
+	nodeConfig            *config.NodeConfig
+	networkConfig         *config.NetworkConfig
+	egressConfig          *config.EgressConfig
+	serviceConfig         *config.ServiceConfig
+	l7NetworkPolicyConfig *config.L7NetworkPolicyConfig
 	// ovsMetersAreSupported indicates whether the OVS datapath supports OpenFlow meters.
 	ovsMetersAreSupported bool
 	// packetInHandlers stores handler to process PacketIn event. Each packetin reason can have multiple handlers registered.
@@ -543,6 +546,10 @@ func (c *client) AddOFEntries(ofEntries []binding.OFEntry) error {
 	return c.changeOFEntries(ofEntries, add)
 }
 
+func (c *client) ModifyOFEntries(ofEntries []binding.OFEntry) error {
+	return c.changeOFEntries(ofEntries, mod)
+}
+
 func (c *client) DeleteOFEntries(ofEntries []binding.OFEntry) error {
 	return c.changeOFEntries(ofEntries, del)
 }
@@ -614,10 +621,20 @@ func (f *featurePodConnectivity) gatewayClassifierFlow() binding.Flow {
 }
 
 // podClassifierFlow generates the flow to mark the packets from a local Pod port.
-func (f *featurePodConnectivity) podClassifierFlow(podOFPort uint32, isAntreaFlexibleIPAM bool) binding.Flow {
+// If multi-cluster is enabled, also load podLabelID into LabelIDField.
+func (f *featurePodConnectivity) podClassifierFlow(podOFPort uint32, isAntreaFlexibleIPAM bool, podLabelID *uint32) binding.Flow {
 	regMarksToLoad := []*binding.RegMark{FromLocalRegMark}
 	if isAntreaFlexibleIPAM {
 		regMarksToLoad = append(regMarksToLoad, AntreaFlexibleIPAMRegMark, RewriteMACRegMark)
+	}
+	if podLabelID != nil {
+		return ClassifierTable.ofTable.BuildFlow(priorityLow).
+			Cookie(f.cookieAllocator.Request(f.category).Raw()).
+			MatchInPort(podOFPort).
+			Action().LoadRegMark(regMarksToLoad...).
+			Action().SetTunnelID(uint64(*podLabelID)).
+			Action().GotoStage(stageValidation).
+			Done()
 	}
 	return ClassifierTable.ofTable.BuildFlow(priorityLow).
 		Cookie(f.cookieAllocator.Request(f.category).Raw()).
@@ -1727,7 +1744,7 @@ func (f *featurePodConnectivity) ipv6Flows() []binding.Flow {
 
 // For normal traffic, conjunctionActionFlow generates the flow to jump to a specific table if policyRuleConjunction ID is matched. Priority of
 // conjunctionActionFlow is created at priorityLow for k8s network policies, and *priority assigned by PriorityAssigner for AntreaPolicy.
-func (f *featureNetworkPolicy) conjunctionActionFlow(conjunctionID uint32, table binding.Table, nextTable uint8, priority *uint16, enableLogging bool) []binding.Flow {
+func (f *featureNetworkPolicy) conjunctionActionFlow(conjunctionID uint32, table binding.Table, nextTable uint8, priority *uint16, enableLogging bool, l7RuleVlanID *uint32) []binding.Flow {
 	tableID := table.GetID()
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var ofPriority uint16
@@ -1754,12 +1771,37 @@ func (f *featureNetworkPolicy) conjunctionActionFlow(conjunctionID uint32, table
 			if f.ovsMetersAreSupported {
 				fb = fb.Action().Meter(PacketInMeterIDNP)
 			}
+			if l7RuleVlanID != nil {
+				return fb.
+					Action().LoadToRegField(conjReg, conjunctionID).                           // Traceflow.
+					Action().LoadRegMark(DispositionAllowRegMark, CustomReasonLoggingRegMark). // AntreaPolicy, Enable logging.
+					Action().SendToController(uint8(PacketInReasonNP)).
+					Action().CT(true, nextTable, ctZone, f.ctZoneSrcField). // CT action requires commit flag if actions other than NAT without arguments are specified.
+					LoadToLabelField(uint64(conjunctionID), labelField).
+					LoadToCtMark(L7NPRedirectCTMark).                               // Mark the packets of the connection should be redirected to an application-aware engine.
+					LoadToLabelField(uint64(*l7RuleVlanID), L7NPRuleVlanIDCTLabel). // Load the VLAN ID allocated for L7 NetworkPolicy rule to CT mark field L7NPRuleVlanIDCTMarkField.
+					CTDone().
+					Cookie(cookieID).
+					Done()
+			}
 			return fb.
 				Action().LoadToRegField(conjReg, conjunctionID).                           // Traceflow.
 				Action().LoadRegMark(DispositionAllowRegMark, CustomReasonLoggingRegMark). // AntreaPolicy, Enable logging.
 				Action().SendToController(uint8(PacketInReasonNP)).
 				Action().CT(true, nextTable, ctZone, f.ctZoneSrcField). // CT action requires commit flag if actions other than NAT without arguments are specified.
 				LoadToLabelField(uint64(conjunctionID), labelField).
+				CTDone().
+				Cookie(cookieID).
+				Done()
+		}
+		if l7RuleVlanID != nil {
+			return table.BuildFlow(ofPriority).MatchProtocol(proto).
+				MatchConjID(conjunctionID).
+				Action().LoadToRegField(conjReg, conjunctionID).        // Traceflow.
+				Action().CT(true, nextTable, ctZone, f.ctZoneSrcField). // CT action requires commit flag if actions other than NAT without arguments are specified.
+				LoadToLabelField(uint64(conjunctionID), labelField).
+				LoadToCtMark(L7NPRedirectCTMark).                               // Mark the packets of the connection should be redirected to an application-aware engine.
+				LoadToLabelField(uint64(*l7RuleVlanID), L7NPRuleVlanIDCTLabel). // Load the VLAN ID allocated for L7 NetworkPolicy rule to CT mark field L7NPRuleVlanIDCTMarkField.
 				CTDone().
 				Cookie(cookieID).
 				Done()
@@ -1966,6 +2008,14 @@ func (f *featureNetworkPolicy) addFlowMatch(fb binding.FlowBuilder, matchKey *ty
 		fb = fb.MatchRegFieldWithValue(ServiceGroupIDField, matchValue.(uint32))
 	case MatchIGMPProtocol:
 		fb = fb.MatchProtocol(matchKey.GetOFProtocol())
+	case MatchLabelID:
+		fb = fb.MatchTunnelID(uint64(matchValue.(uint32)))
+	case MatchTCPFlags:
+		fallthrough
+	case MatchTCPv6Flags:
+		fb = fb.MatchProtocol(matchKey.GetOFProtocol())
+		tcpFlag := matchValue.(TCPFlags)
+		fb = fb.MatchTCPFlags(tcpFlag.Flag, tcpFlag.Mask)
 	}
 	return fb
 }
@@ -2014,7 +2064,6 @@ func (f *featureNetworkPolicy) defaultDropFlow(table binding.Table, matchPairs [
 	for _, eachMatchPair := range matchPairs {
 		fb = f.addFlowMatch(fb, eachMatchPair.matchKey, eachMatchPair.matchValue)
 	}
-	fb = fb.Action().Drop()
 
 	var customReason int
 	if f.enableDenyTracking {
@@ -2025,11 +2074,26 @@ func (f *featureNetworkPolicy) defaultDropFlow(table binding.Table, matchPairs [
 	}
 
 	if enableLogging || f.enableDenyTracking {
-		fb = fb.Action().LoadRegMark(DispositionDropRegMark).
+		return fb.Action().LoadRegMark(DispositionDropRegMark).
 			Action().LoadToRegField(CustomReasonField, uint32(customReason)).
-			Action().SendToController(uint8(PacketInReasonNP))
+			Action().SendToController(uint8(PacketInReasonNP)).
+			Cookie(cookieID).
+			Done()
 	}
-	return fb.Cookie(cookieID).Done()
+	return fb.Action().Drop().
+		Cookie(cookieID).
+		Done()
+}
+
+// multiClusterNetworkPolicySecurityDropFlow generates the security drop flows for MultiClusterNetworkPolicy.
+func (f *featureNetworkPolicy) multiClusterNetworkPolicySecurityDropFlow(table binding.Table, matchPairs []matchPair) binding.Flow {
+	cookieID := f.cookieAllocator.Request(f.category).Raw()
+	fb := table.BuildFlow(priorityNormal)
+	fb = f.addFlowMatch(fb, MatchLabelID, UnknownLabelIdentity)
+	for _, eachMatchPair := range matchPairs {
+		fb = f.addFlowMatch(fb, eachMatchPair.matchKey, eachMatchPair.matchValue)
+	}
+	return fb.Cookie(cookieID).Action().Drop().Done()
 }
 
 // dnsPacketInFlow generates the flow to send dns response packets of fqdn policy selected Pods to the fqdnController for
@@ -2181,7 +2245,7 @@ func (f *featureEgress) snatRuleFlow(ofPort uint32, snatIP net.IP, snatMark uint
 		Action().SetSrcMAC(localGatewayMAC).
 		Action().SetDstMAC(GlobalVirtualMAC).
 		Action().SetTunnelDst(snatIP). // Set tunnel destination to the SNAT IP.
-		Action().LoadRegMark(ToTunnelRegMark).
+		Action().LoadRegMark(ToTunnelRegMark, RemoteSNATRegMark).
 		Action().GotoStage(stageSwitching).
 		Done()
 }
@@ -2306,7 +2370,8 @@ func (f *featureService) serviceLBFlow(groupID binding.GroupIDType,
 	protocol binding.Protocol,
 	withSessionAffinity,
 	nodeLocalExternal bool,
-	serviceType v1.ServiceType) binding.Flow {
+	serviceType v1.ServiceType,
+	nested bool) binding.Flow {
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var lbResultMark *binding.RegMark
 	if withSessionAffinity {
@@ -2348,7 +2413,33 @@ func (f *featureService) serviceLBFlow(groupID binding.GroupIDType,
 	if f.enableAntreaPolicy {
 		flowBuilder = flowBuilder.Action().LoadToRegField(ServiceGroupIDField, uint32(groupID))
 	}
+	if nested {
+		flowBuilder = flowBuilder.Action().LoadRegMark(NestedServiceRegMark)
+	}
 	return flowBuilder.Action().Group(groupID).Done()
+}
+
+// endpointRedirectFlowForServiceIP generates the flow which uses the specific group for a Service's ClusterIP
+// to do final Endpoint selection.
+func (f *featureService) endpointRedirectFlowForServiceIP(clusterIP net.IP, svcPort uint16, protocol binding.Protocol, groupID binding.GroupIDType) binding.Flow {
+	unionVal := (EpSelectedRegMark.GetValue() << EndpointPortField.GetRange().Length()) + uint32(svcPort)
+	flowBuilder := EndpointDNATTable.ofTable.BuildFlow(priorityHigh).
+		MatchProtocol(protocol).
+		Cookie(f.cookieAllocator.Request(f.category).Raw()).
+		MatchRegFieldWithValue(EpUnionField, unionVal).
+		MatchRegMark(NestedServiceRegMark)
+	ipProtocol := getIPProtocol(clusterIP)
+
+	if ipProtocol == binding.ProtocolIP {
+		ipVal := binary.BigEndian.Uint32(clusterIP.To4())
+		flowBuilder = flowBuilder.MatchRegFieldWithValue(EndpointIPField, ipVal)
+	} else {
+		ipVal := []byte(clusterIP)
+		flowBuilder = flowBuilder.MatchXXReg(EndpointIP6Field.GetRegID(), ipVal)
+	}
+	return flowBuilder.Action().
+		Group(groupID).
+		Done()
 }
 
 // endpointDNATFlow generates the flow which transforms the Service Cluster IP to the Endpoint IP according to the Endpoint
@@ -2655,6 +2746,7 @@ func NewClient(bridgeName string,
 	mgmtAddr string,
 	enableProxy bool,
 	enableAntreaPolicy bool,
+	enableL7NetworkPolicy bool,
 	enableEgress bool,
 	enableDenyTracking bool,
 	proxyAll bool,
@@ -2668,6 +2760,7 @@ func NewClient(bridgeName string,
 		enableProxy:           enableProxy,
 		proxyAll:              proxyAll,
 		enableAntreaPolicy:    enableAntreaPolicy,
+		enableL7NetworkPolicy: enableL7NetworkPolicy,
 		enableDenyTracking:    enableDenyTracking,
 		enableEgress:          enableEgress,
 		enableMulticast:       enableMulticast,

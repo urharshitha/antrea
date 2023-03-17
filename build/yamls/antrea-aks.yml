@@ -1016,6 +1016,9 @@ spec:
                               type: string
                             namespace:
                               type: string
+                            scope:
+                              type: string
+                              enum: [ 'Cluster', 'ClusterSet' ]
                       name:
                         type: string
                       enableLogging:
@@ -2081,6 +2084,8 @@ spec:
                               type: string
                             namespace:
                               type: string
+                            scope:
+                              type: string
                       name:
                         type: string
                       enableLogging:
@@ -2507,6 +2512,10 @@ spec:
                             translatedDstIP:
                               type: string
                             tunnelDstIP:
+                              type: string
+                            egressIP:
+                              type: string
+                            egress:
                               type: string
                 capturedPacket:
                   properties:
@@ -2964,8 +2973,7 @@ data:
     # Enable multicast traffic.
     #  Multicast: false
 
-    # Enable Antrea Multi-cluster Gateway to support cross-cluster traffic.
-    # This feature is supported only with encap mode.
+    # Enable Antrea Multi-cluster features.
     #  Multicluster: false
 
     # Enable support for provisioning secondary network interfaces for Pods (using
@@ -2981,6 +2989,13 @@ data:
 
     # Enable certificated-based authentication for IPsec.
     #  IPsecCertAuth: false
+
+    # Enable collecting support bundle files with SupportBundleCollection CRD.
+    #  SupportBundleCollection: false
+
+    # Enable users to protect their applications by specifying how they are allowed to communicate with others, taking
+    # into account application context.
+    #  L7NetworkPolicy: false
 
     # Name of the OpenVSwitch bridge antrea-agent will create and use.
     # Make sure it doesn't conflict with your existing OpenVSwitch bridges.
@@ -3072,6 +3087,9 @@ data:
     egress:
       # exceptCIDRs is the CIDR ranges to which outbound Pod traffic will not be SNAT'd by Egresses.
       exceptCIDRs:
+      # The maximum number of Egress IPs that can be assigned to a Node. It's useful when the Node network restricts
+      # the number of secondary IPs a Node can have, e.g. EKS. It must not be greater than 255.
+      maxEgressIPsPerNode: 255
 
     # ClusterIP CIDR range for Services. It's required when AntreaProxy is not enabled, and should be
     # set to the same value as the one specified by --service-cluster-ip-range for kube-apiserver. When
@@ -3093,15 +3111,17 @@ data:
     enablePrometheusMetrics: true
 
     # Provide the IPFIX collector address as a string with format <HOST>:[<PORT>][:<PROTO>].
-    # HOST can either be the DNS name or the IP of the Flow Collector. For example,
-    # "flow-aggregator.flow-aggregator.svc" can be provided as DNS name to connect
-    # to the Antrea Flow Aggregator service. If IP, it can be either IPv4 or IPv6.
-    # However, IPv6 address should be wrapped with [].
+    # HOST can either be the DNS name, IP, or Service name of the Flow Collector. If
+    # using an IP, it can be either IPv4 or IPv6. However, IPv6 address should be
+    # wrapped with []. When the collector is running in-cluster as a Service, set
+    # <HOST> to <Service namespace>/<Service name>. For example,
+    # "flow-aggregator/flow-aggregator" can be provided to connect to the Antrea
+    # Flow Aggregator Service.
     # If PORT is empty, we default to 4739, the standard IPFIX port.
     # If no PROTO is given, we consider "tls" as default. We support "tls", "tcp" and
     # "udp" protocols. "tls" is used for securing communication between flow exporter and
     # flow aggregator.
-    flowCollectorAddr: "flow-aggregator.flow-aggregator.svc:4739:tls"
+    flowCollectorAddr: "flow-aggregator/flow-aggregator:4739:tls"
 
     # Provide flow poll interval as a duration string. This determines how often the
     # flow exporter dumps connections from the conntrack module. Flow poll interval
@@ -3213,10 +3233,15 @@ data:
     multicluster:
     # Enable Antrea Multi-cluster Gateway to support cross-cluster traffic.
     # This feature is supported only with encap mode.
-      enable: false
+      enableGateway: false
     # The Namespace where Antrea Multi-cluster Controller is running.
     # The default is antrea-agent's Namespace.
       namespace: ""
+    # Enable Multi-cluster NetworkPolicy (ingress rules).
+    # Multi-cluster Gateway must be enabled to enable StretchedNetworkPolicy.
+      enableStretchedNetworkPolicy: false
+    # Enable Pod to Pod connectivity.
+      enablePodToPodConnectivity: false
   antrea-cni.conflist: |
     {
         "cniVersion":"0.3.0",
@@ -3286,8 +3311,12 @@ data:
     # Enable collecting support bundle files with SupportBundleCollection CRD.
     #  SupportBundleCollection: false
 
-    # Enable multi-cluster features.
+    # Enable Antrea Multi-cluster features.
     #  Multicluster: false
+
+    # Enable users to protect their applications by specifying how they are allowed to communicate with others, taking
+    # into account application context.
+    #  L7NetworkPolicy: false
 
     # The port for the antrea-controller APIServer to serve on.
     # Note that if it's set to another value, the `containerPort` of the `api` port of the
@@ -3346,9 +3375,8 @@ data:
       selfSignedCA: true
 
     multicluster:
-      # Enable Multicluster which allow Antrea-native policies to select peers
-      # from other clusters in a ClusterSet.
-      enable: false
+      # Enable Multi-cluster NetworkPolicy.
+      enableStretchedNetworkPolicy: false
 ---
 # Source: antrea/templates/crds/group.yaml
 apiVersion: apiextensions.k8s.io/v1
@@ -3573,6 +3601,20 @@ rules:
       - create
       - get
   - apiGroups:
+      - controlplane.antrea.io
+    resources:
+      - supportbundlecollections
+    verbs:
+      - get
+      - watch
+      - list
+  - apiGroups:
+      - controlplane.antrea.io
+    resources:
+      - supportbundlecollections/status
+    verbs:
+      - create
+  - apiGroups:
       - authentication.k8s.io
     resources:
       - tokenreviews
@@ -3682,6 +3724,7 @@ rules:
     - multicluster.crd.antrea.io
     resources:
     - clusterinfoimports
+    - labelidentities
     verbs:
     - get
     - list
@@ -4256,7 +4299,7 @@ spec:
         kubectl.kubernetes.io/default-container: antrea-agent
         # Automatically restart Pods with a RollingUpdate if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: 4e2311619bbb44c5903fc863c0df9616409367bdc5316eb4c8f677cbab5bad04
+        checksum/config: be4d7318350c398a0362a44ff0d4ff779150a303e577ed1e2265aaa75c00546e
       labels:
         app: antrea
         component: antrea-agent
@@ -4497,7 +4540,7 @@ spec:
       annotations:
         # Automatically restart Pod if the ConfigMap changes
         # See https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
-        checksum/config: 4e2311619bbb44c5903fc863c0df9616409367bdc5316eb4c8f677cbab5bad04
+        checksum/config: be4d7318350c398a0362a44ff0d4ff779150a303e577ed1e2265aaa75c00546e
       labels:
         app: antrea
         component: antrea-controller

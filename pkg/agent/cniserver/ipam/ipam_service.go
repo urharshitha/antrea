@@ -19,7 +19,7 @@ import (
 	"sync"
 
 	"github.com/containernetworking/cni/pkg/invoke"
-	"github.com/containernetworking/cni/pkg/types/current"
+	current "github.com/containernetworking/cni/pkg/types/100"
 
 	"antrea.io/antrea/pkg/agent/cniserver/types"
 	cnipb "antrea.io/antrea/pkg/apis/cni/v1beta1"
@@ -167,4 +167,13 @@ func getAntreaIPAMDriver() *AntreaIPAM {
 		return nil
 	}
 	return drivers[0].(*AntreaIPAM)
+}
+
+// The following functions are only for testing.
+func ResetIPAMDriver(ipamType string, driver IPAMDriver) {
+	ipamDrivers[ipamType] = []IPAMDriver{driver}
+}
+
+func AddIPAMResult(key string, result *IPAMResult) {
+	ipamResults.Store(key, result)
 }

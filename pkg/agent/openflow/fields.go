@@ -80,6 +80,8 @@ var (
 	CustomReasonDenyRegMark    = binding.NewRegMark(CustomReasonField, CustomReasonDeny)
 	CustomReasonDNSRegMark     = binding.NewRegMark(CustomReasonField, CustomReasonDNS)
 	CustomReasonIGMPRegMark    = binding.NewRegMark(CustomReasonField, CustomReasonIGMP)
+	// reg0[18]: Mark to indicate remote SNAT for Egress.
+	RemoteSNATRegMark = binding.NewOneBitRegMark(0, 18)
 
 	// reg1(NXM_NX_REG1)
 	// Field to cache the ofPort of the OVS interface where to output packet.
@@ -123,7 +125,9 @@ var (
 	// externalTrafficPolicy is Cluster.
 	ToClusterServiceRegMark = binding.NewOneBitRegMark(4, 21)
 	// reg4[22..23]: Field to store the action of a traffic control rule. Marks in this field include:
-	TrafficControlActionField     = binding.NewRegField(4, 22, 23)
+	TrafficControlActionField = binding.NewRegField(4, 22, 23)
+	// reg4[24]: Mark to indicate whether the Endpoints of a Service includes another Service's ClusterIP.
+	NestedServiceRegMark          = binding.NewOneBitRegMark(4, 24)
 	TrafficControlMirrorRegMark   = binding.NewRegMark(TrafficControlActionField, 0b01)
 	TrafficControlRedirectRegMark = binding.NewRegMark(TrafficControlActionField, 0b10)
 
@@ -165,7 +169,7 @@ var (
 
 // Marks using CT.
 var (
-	//TODO: There is a bug in libOpenflow when CT_MARK range is from 0 to 0, and a wrong mask will be got. As a result,
+	// TODO: There is a bug in libOpenflow when CT_MARK range is from 0 to 0, and a wrong mask will be got. As a result,
 	// don't just use bit 0 of CT_MARK.
 
 	// CTMark (NXM_NX_CT_MARK)
@@ -188,6 +192,11 @@ var (
 	// CTMark[6]: Mark to indicate the connection is hairpin.
 	// This CT mark is used in CtZone / CtZoneV6 and SNATCtZone / SNATCtZoneV6.
 	HairpinCTMark = binding.NewOneBitCTMark(6)
+
+	// CTMark[7]: Mark to indicate the connection should be redirected to an application-aware engine. This mark is only
+	// for L7 NetworkPolicy.
+	// This CT mark is used in CtZone / CtZoneV6.
+	L7NPRedirectCTMark = binding.NewOneBitCTMark(7)
 )
 
 // Fields using CT label.
@@ -197,4 +206,7 @@ var (
 
 	// Field to store the egress rule ID.
 	EgressRuleCTLabel = binding.NewCTLabel(32, 63)
+
+	// Field to store the VLAN ID allocated for a L7 NetworkPolicy rule.
+	L7NPRuleVlanIDCTLabel = binding.NewCTLabel(64, 75)
 )

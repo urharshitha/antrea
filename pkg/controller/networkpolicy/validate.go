@@ -589,7 +589,7 @@ func (v *antreaPolicyValidator) validatePeers(ingress, egress []crdv1alpha1.Rule
 				return fmt.Sprintf("`toServices` can only be used when AntreaProxy is enabled"), false
 			}
 			if (rule.To != nil && len(rule.To) > 0) || rule.Ports != nil || rule.Protocols != nil {
-				return fmt.Sprintf("`toServices` can't be used with `to`, `ports` or `protocols`"), false
+				return fmt.Sprintf("`toServices` cannot be used with `to`, `ports` or `protocols`"), false
 			}
 		}
 		msg, isValid := checkPeers(rule.To)
@@ -771,6 +771,9 @@ func (v *antreaPolicyValidator) validateL7Protocols(ingressRules, egressRules []
 	for _, r := range append(ingressRules, egressRules...) {
 		if len(r.L7Protocols) == 0 {
 			continue
+		}
+		if !features.DefaultFeatureGate.Enabled(features.L7NetworkPolicy) {
+			return fmt.Sprintf("layer 7 protocols can only be used when L7NetworkPolicy is enabled"), false
 		}
 		if *r.Action != crdv1alpha1.RuleActionAllow {
 			return "layer 7 protocols only support Allow", false

@@ -56,6 +56,8 @@ const (
 	ICMPAddr
 	ServiceGroupIDAddr
 	IGMPAddr
+	LabelIDAddr
+	TCPFlagsAddr
 	UnSupported
 )
 
@@ -79,6 +81,7 @@ type PolicyRule struct {
 	To            []Address
 	Service       []v1beta2.Service
 	L7Protocols   []v1beta2.L7Protocol
+	L7RuleVlanID  *uint32
 	Action        *secv1alpha1.RuleAction
 	Priority      *uint16
 	Name          string
@@ -91,10 +94,6 @@ type PolicyRule struct {
 // IsAntreaNetworkPolicyRule returns if a PolicyRule is created for Antrea NetworkPolicy types.
 func (r *PolicyRule) IsAntreaNetworkPolicyRule() bool {
 	return r.PolicyRef.Type != v1beta2.K8sNetworkPolicy
-}
-
-func (r *PolicyRule) IsL7Rule() bool {
-	return len(r.L7Protocols) > 0
 }
 
 // Priority is a struct that is composed of Antrea NetworkPolicy priority, rule priority and Tier priority.

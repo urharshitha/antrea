@@ -65,10 +65,10 @@ var (
 	actionAllow  = crdv1alpha1.RuleActionAllow
 	actionDrop   = crdv1alpha1.RuleActionDrop
 	port8080     = intstr.FromInt(8080)
-	protocolTCP  = v1beta2.ProtocolTCP
 	protocolICMP = v1beta2.ProtocolICMP
 	priority100  = uint16(100)
 	priority200  = uint16(200)
+	priority201  = uint16(201)
 	icmpType8    = int32(8)
 	icmpCode0    = int32(0)
 
@@ -106,7 +106,7 @@ func TestPolicyRuleConjunction(t *testing.T) {
 
 	var addedAddrs = parseAddresses([]string{"192.168.1.3", "192.168.1.30", "192.168.2.0/24", "103", "104"})
 	expectConjunctionsCount([]*expectConjunctionTimes{{5, ruleID1, clauseID, nClause}})
-	flowChanges1 := clause1.addAddrFlows(c.featureNetworkPolicy, types.SrcAddress, addedAddrs, nil, false)
+	flowChanges1 := clause1.addAddrFlows(c.featureNetworkPolicy, types.SrcAddress, addedAddrs, nil, false, false)
 	err := c.featureNetworkPolicy.applyConjunctiveMatchFlows(flowChanges1)
 	require.Nil(t, err, "Failed to invoke addAddrFlows")
 	checkFlowCount(t, len(addedAddrs))
@@ -131,7 +131,7 @@ func TestPolicyRuleConjunction(t *testing.T) {
 	var addedAddrs2 = parseAddresses([]string{"192.168.1.30", "192.168.1.50"})
 	expectConjunctionsCount([]*expectConjunctionTimes{{2, ruleID2, clauseID2, nClause}})
 	expectConjunctionsCount([]*expectConjunctionTimes{{1, ruleID1, clauseID, nClause}})
-	flowChanges3 := clause2.addAddrFlows(c.featureNetworkPolicy, types.SrcAddress, addedAddrs2, nil, false)
+	flowChanges3 := clause2.addAddrFlows(c.featureNetworkPolicy, types.SrcAddress, addedAddrs2, nil, false, false)
 	err = c.featureNetworkPolicy.applyConjunctiveMatchFlows(flowChanges3)
 	require.Nil(t, err, "Failed to invoke addAddrFlows")
 	testAddr := NewIPAddress(net.ParseIP("192.168.1.30"))
@@ -147,7 +147,7 @@ func TestPolicyRuleConjunction(t *testing.T) {
 	nClause3 := uint8(1)
 	clause3 := conj3.newClause(clauseID3, nClause3, mockEgressRuleTable, mockEgressDefaultTable)
 	var addedAddrs3 = parseAddresses([]string{"192.168.1.30"})
-	flowChanges4 := clause3.addAddrFlows(c.featureNetworkPolicy, types.SrcAddress, addedAddrs3, nil, false)
+	flowChanges4 := clause3.addAddrFlows(c.featureNetworkPolicy, types.SrcAddress, addedAddrs3, nil, false, false)
 	err = c.featureNetworkPolicy.applyConjunctiveMatchFlows(flowChanges4)
 	require.Nil(t, err, "Failed to invoke addAddrFlows")
 	checkConjMatchFlowActions(t, c, clause3, testAddr, types.SrcAddress, 2, 1)
@@ -173,7 +173,7 @@ func TestInstallPolicyRuleFlows(t *testing.T) {
 	// Create a policyRuleConjunction for the dns response interception flows
 	// to ensure nil NetworkPolicyReference is handled correctly by GetNetworkPolicyFlowKeys.
 	dnsID := uint32(1)
-	require.NoError(t, c.NewDNSpacketInConjunction(dnsID))
+	require.NoError(t, c.NewDNSPacketInConjunction(dnsID))
 
 	ruleID1 := uint32(101)
 	rule1 := &types.PolicyRule{
@@ -453,6 +453,22 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 						UID:       "id3",
 					},
 				},
+				{
+					Direction: v1beta2.DirectionIn,
+					From:      parseLabelIdentityAddresses([]uint32{1, 2}),
+					Action:    &actionDrop,
+					Priority:  &priority201,
+					To:        []types.Address{NewOFPortAddress(1), NewOFPortAddress(2)},
+					Service:   []v1beta2.Service{},
+					FlowID:    uint32(13),
+					TableID:   AntreaPolicyIngressRuleTable.GetID(),
+					PolicyRef: &v1beta2.NetworkPolicyReference{
+						Type:      v1beta2.AntreaNetworkPolicy,
+						Namespace: "ns1",
+						Name:      "np4",
+						UID:       "id4",
+					},
+				},
 			},
 			expectedFlowsFn: func(c *client) []binding.Flow {
 				cookiePolicy := c.cookieAllocator.Request(cookie.NetworkPolicy).Raw()
@@ -471,6 +487,11 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 						Action().LoadToRegField(CNPConjIDField, 12).
 						Action().LoadRegMark(CnpDenyRegMark).
 						Action().GotoTable(IngressMetricTable.GetID()).Done(),
+					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority201).Cookie(cookiePolicy).
+						MatchConjID(13).
+						Action().LoadToRegField(CNPConjIDField, 13).
+						Action().LoadRegMark(CnpDenyRegMark).
+						Action().GotoTable(IngressMetricTable.GetID()).Done(),
 					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority100).Cookie(cookiePolicy).
 						MatchProtocol(binding.ProtocolIP).MatchSrcIP(net.ParseIP("192.168.1.40")).
 						Action().Conjunction(10, 1, 2).
@@ -484,6 +505,12 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority100).Cookie(cookiePolicy).
 						MatchProtocol(binding.ProtocolIP).MatchSrcIP(net.ParseIP("192.168.1.51")).
 						Action().Conjunction(11, 1, 3).Done(),
+					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority201).Cookie(cookiePolicy).
+						MatchTunnelID(1).
+						Action().Conjunction(13, 1, 3).Done(),
+					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority201).Cookie(cookiePolicy).
+						MatchTunnelID(2).
+						Action().Conjunction(13, 1, 3).Done(),
 					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority100).Cookie(cookiePolicy).
 						MatchRegFieldWithValue(TargetOFPortField, uint32(1)).
 						Action().Conjunction(10, 2, 2).
@@ -497,6 +524,12 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority100).Cookie(cookiePolicy).
 						MatchRegFieldWithValue(TargetOFPortField, uint32(3)).
 						Action().Conjunction(11, 2, 3).Done(),
+					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority201).Cookie(cookiePolicy).
+						MatchRegFieldWithValue(TargetOFPortField, uint32(1)).
+						Action().Conjunction(13, 2, 3).Done(),
+					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority201).Cookie(cookiePolicy).
+						MatchRegFieldWithValue(TargetOFPortField, uint32(2)).
+						Action().Conjunction(13, 2, 3).Done(),
 					AntreaPolicyIngressRuleTable.ofTable.BuildFlow(priority100).Cookie(cookiePolicy).
 						MatchProtocol(binding.ProtocolTCP).MatchDstPort(8080, nil).
 						Action().Conjunction(11, 3, 3).Done(),
@@ -518,6 +551,17 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 					IngressMetricTable.ofTable.BuildFlow(priorityNormal).Cookie(cookiePolicy).
 						MatchRegMark(CnpDenyRegMark).MatchRegFieldWithValue(CNPConjIDField, 12).
 						Action().Drop().Done(),
+					IngressMetricTable.ofTable.BuildFlow(priorityNormal).Cookie(cookiePolicy).
+						MatchRegMark(CnpDenyRegMark).MatchRegFieldWithValue(CNPConjIDField, 13).
+						Action().Drop().Done(),
+					IngressDefaultTable.ofTable.BuildFlow(priority200).Cookie(cookiePolicy).
+						MatchTunnelID(uint64(UnknownLabelIdentity)).
+						MatchRegFieldWithValue(TargetOFPortField, uint32(1)).
+						Action().Drop().Done(),
+					IngressDefaultTable.ofTable.BuildFlow(priority200).Cookie(cookiePolicy).
+						MatchTunnelID(uint64(UnknownLabelIdentity)).
+						MatchRegFieldWithValue(TargetOFPortField, uint32(2)).
+						Action().Drop().Done(),
 				}
 			},
 		},
@@ -527,7 +571,7 @@ func TestBatchInstallPolicyRuleFlows(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			mockOperations := oftest.NewMockOFEntryOperations(ctrl)
-			ofClient := NewClient(bridgeName, bridgeMgmtAddr, false, true, false, false, false, false, false, false, false)
+			ofClient := NewClient(bridgeName, bridgeMgmtAddr, false, true, false, false, false, false, false, false, false, false)
 			c = ofClient.(*client)
 			c.cookieAllocator = cookie.NewAllocator(0)
 			c.ofEntryOperations = mockOperations
@@ -648,7 +692,7 @@ func TestConjMatchFlowContextKeyConflict(t *testing.T) {
 		id: ruleID1,
 	}
 	clause1 := conj1.newClause(1, 3, mockEgressRuleTable, mockEgressDefaultTable)
-	flowChange1 := clause1.addAddrFlows(c.featureNetworkPolicy, types.DstAddress, parseAddresses([]string{ip.String()}), nil, false)
+	flowChange1 := clause1.addAddrFlows(c.featureNetworkPolicy, types.DstAddress, parseAddresses([]string{ip.String()}), nil, false, false)
 	err := c.featureNetworkPolicy.applyConjunctiveMatchFlows(flowChange1)
 	require.Nil(t, err, "no error expect in applyConjunctiveMatchFlows")
 
@@ -657,7 +701,7 @@ func TestConjMatchFlowContextKeyConflict(t *testing.T) {
 		id: ruleID2,
 	}
 	clause2 := conj2.newClause(1, 3, mockEgressRuleTable, mockEgressDefaultTable)
-	flowChange2 := clause2.addAddrFlows(c.featureNetworkPolicy, types.DstAddress, parseAddresses([]string{ipNet.String()}), nil, false)
+	flowChange2 := clause2.addAddrFlows(c.featureNetworkPolicy, types.DstAddress, parseAddresses([]string{ipNet.String()}), nil, false, false)
 	err = c.featureNetworkPolicy.applyConjunctiveMatchFlows(flowChange2)
 	require.Nil(t, err, "no error expect in applyConjunctiveMatchFlows")
 	expectedMatchKey := fmt.Sprintf("table:%d,priority:%s,matchPair:%s", EgressRuleTable.GetID(), strconv.Itoa(int(priorityNormal)), singleMatchPair.KeyString())
@@ -973,6 +1017,14 @@ func parseAddresses(addrs []string) []types.Address {
 			ip := net.ParseIP(addr)
 			addresses = append(addresses, NewIPAddress(ip))
 		}
+	}
+	return addresses
+}
+
+func parseLabelIdentityAddresses(labelIdentities []uint32) []types.Address {
+	var addresses = make([]types.Address, 0)
+	for _, labelIdentity := range labelIdentities {
+		addresses = append(addresses, NewLabelIDAddress(labelIdentity))
 	}
 	return addresses
 }
@@ -1337,6 +1389,66 @@ func TestClient_GetPolicyInfoFromConjunction(t *testing.T) {
 			assert.Equal(t, tc.wantNpRef, gotNpRef)
 			assert.Equal(t, tc.wantPriority, gotPriority)
 			assert.Equal(t, tc.wantRuleName, gotRuleName)
+		})
+	}
+}
+
+func Test_featureNetworkPolicy_initFlows(t *testing.T) {
+	testCases := []struct {
+		name          string
+		nodeType      config.NodeType
+		clientOptions []clientOptionsFn
+		expectedFlows []string
+	}{
+		{
+			name:          "K8s Node with Multicast and L7NetworkPolicy",
+			nodeType:      config.K8sNode,
+			clientOptions: []clientOptionsFn{enableMulticast, enableL7NetworkPolicy},
+			expectedFlows: []string{
+				"cookie=0x1020000000000, table=Classifier, priority=200,in_port=11,vlan_tci=0x1000/0x1000 actions=pop_vlan,set_field:0x6/0xf->reg0,goto_table:L3Forwarding",
+				"cookie=0x1020000000000, table=IngressSecurityClassifier, priority=200,reg0=0x20/0xf0 actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=IngressSecurityClassifier, priority=200,reg0=0x10/0xf0 actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=IngressSecurityClassifier, priority=200,reg0=0x40/0xf0 actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyEgressRule, priority=64990,ct_state=-new+est,ip actions=goto_table:EgressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyEgressRule, priority=64990,ct_state=-new+rel,ip actions=goto_table:EgressMetric",
+				"cookie=0x1020000000000, table=TrafficControl, priority=210,reg0=0x106/0x10f actions=goto_table:Output",
+				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=64990,ct_state=-new+est,ip actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=64990,ct_state=-new+rel,ip actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=Output, priority=211,ct_mark=0x80/0x80,reg0=0x100/0x100 actions=push_vlan:0x8100,move:NXM_NX_CT_LABEL[64..75]->OXM_OF_VLAN_VID[0..11],output:10",
+			},
+		},
+		{
+			name:          "K8s Node with Multicast",
+			nodeType:      config.K8sNode,
+			clientOptions: []clientOptionsFn{enableMulticast},
+			expectedFlows: []string{
+				"cookie=0x1020000000000, table=IngressSecurityClassifier, priority=200,reg0=0x20/0xf0 actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=IngressSecurityClassifier, priority=200,reg0=0x10/0xf0 actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=IngressSecurityClassifier, priority=200,reg0=0x40/0xf0 actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyEgressRule, priority=64990,ct_state=-new+est,ip actions=goto_table:EgressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyEgressRule, priority=64990,ct_state=-new+rel,ip actions=goto_table:EgressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=64990,ct_state=-new+est,ip actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=64990,ct_state=-new+rel,ip actions=goto_table:IngressMetric",
+			},
+		},
+		{
+			name:     "External Node",
+			nodeType: config.ExternalNode,
+			expectedFlows: []string{
+				"cookie=0x1020000000000, table=AntreaPolicyEgressRule, priority=64990,ct_state=-new+est,ip actions=goto_table:EgressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyEgressRule, priority=64990,ct_state=-new+rel,ip actions=goto_table:EgressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=64990,ct_state=-new+est,ip actions=goto_table:IngressMetric",
+				"cookie=0x1020000000000, table=AntreaPolicyIngressRule, priority=64990,ct_state=-new+rel,ip actions=goto_table:IngressMetric",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := newFakeClient(nil, true, false, tc.nodeType, config.TrafficEncapModeEncap, tc.clientOptions...)
+			defer resetPipelines()
+
+			assert.ElementsMatch(t, tc.expectedFlows, getFlowStrings(fc.featureNetworkPolicy.initFlows()))
 		})
 	}
 }

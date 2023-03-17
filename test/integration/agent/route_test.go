@@ -145,7 +145,7 @@ func TestInitialize(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Logf("Running Initialize test with mode %s node config %s", tc.networkConfig.TrafficEncapMode, nodeConfig)
-		routeClient, err := route.NewClient(tc.networkConfig, tc.noSNAT, false, false, false)
+		routeClient, err := route.NewClient(tc.networkConfig, tc.noSNAT, false, false, false, nil)
 		assert.NoError(t, err)
 
 		var xtablesReleasedTime, initializedTime time.Time
@@ -252,7 +252,7 @@ func TestIpTablesSync(t *testing.T) {
 	gwLink := createDummyGW(t)
 	defer netlink.LinkDel(gwLink)
 
-	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeEncap, IPv4Enabled: true}, false, false, false, false)
+	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeEncap, IPv4Enabled: true}, false, false, false, false, nil)
 	assert.Nil(t, err)
 
 	inited := make(chan struct{})
@@ -303,7 +303,7 @@ func TestAddAndDeleteSNATRule(t *testing.T) {
 	gwLink := createDummyGW(t)
 	defer netlink.LinkDel(gwLink)
 
-	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeEncap, IPv4Enabled: true}, false, false, false, false)
+	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeEncap, IPv4Enabled: true}, false, false, false, false, nil)
 	assert.Nil(t, err)
 
 	inited := make(chan struct{})
@@ -357,7 +357,7 @@ func TestAddAndDeleteRoutes(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Logf("Running test with mode %s peer cidr %s peer ip %s node config %s", tc.mode, tc.peerCIDR, tc.peerIP, nodeConfig)
-		routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: tc.mode, IPv4Enabled: true}, false, false, false, false)
+		routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: tc.mode, IPv4Enabled: true}, false, false, false, false, nil)
 		assert.NoError(t, err)
 		err = routeClient.Initialize(nodeConfig, func() {})
 		assert.NoError(t, err)
@@ -422,7 +422,7 @@ func TestSyncRoutes(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Logf("Running test with mode %s peer cidr %s peer ip %s node config %s", tc.mode, tc.peerCIDR, tc.peerIP, nodeConfig)
-		routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: tc.mode, IPv4Enabled: true}, false, false, false, false)
+		routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: tc.mode, IPv4Enabled: true}, false, false, false, false, nil)
 		assert.NoError(t, err)
 		err = routeClient.Initialize(nodeConfig, func() {})
 		assert.NoError(t, err)
@@ -465,7 +465,7 @@ func TestSyncGatewayKernelRoute(t *testing.T) {
 	}
 	require.NoError(t, netlink.AddrAdd(gwLink, &netlink.Addr{IPNet: gwNet}), "configuring gw IP failed")
 
-	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeEncap}, false, false, false, false)
+	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeEncap}, false, false, false, false, nil)
 	assert.NoError(t, err)
 	err = routeClient.Initialize(nodeConfig, func() {})
 	assert.NoError(t, err)
@@ -517,7 +517,6 @@ func TestReconcile(t *testing.T) {
 		addedRoutes      []peer
 		desiredPeerCIDRs []string
 		desiredNodeIPs   []string
-		desiredServices  map[string]bool
 		// expectations
 		expRoutes map[string]netlink.Link
 	}{
@@ -530,7 +529,6 @@ func TestReconcile(t *testing.T) {
 			},
 			desiredPeerCIDRs: []string{"10.10.20.0/24"},
 			desiredNodeIPs:   []string{remotePeerIP.String()},
-			desiredServices:  map[string]bool{"200.200.10.10": true},
 			expRoutes:        map[string]netlink.Link{"10.10.20.0/24": gwLink, "10.10.30.0/24": nil},
 		},
 		{
@@ -542,7 +540,6 @@ func TestReconcile(t *testing.T) {
 			},
 			desiredPeerCIDRs: []string{"10.10.20.0/24"},
 			desiredNodeIPs:   []string{localPeerIP.String()},
-			desiredServices:  map[string]bool{"200.200.10.10": true},
 			expRoutes:        map[string]netlink.Link{"10.10.20.0/24": nodeLink, "10.10.30.0/24": nil},
 		},
 		{
@@ -556,14 +553,13 @@ func TestReconcile(t *testing.T) {
 			},
 			desiredPeerCIDRs: []string{"10.10.20.0/24", "10.10.40.0/24"},
 			desiredNodeIPs:   []string{localPeerIP.String(), remotePeerIP.String()},
-			desiredServices:  map[string]bool{"200.200.10.10": true},
 			expRoutes:        map[string]netlink.Link{"10.10.20.0/24": nodeLink, "10.10.30.0/24": nil, "10.10.40.0/24": gwLink, "10.10.50.0/24": nil},
 		},
 	}
 
 	for _, tc := range tcs {
 		t.Logf("Running test with mode %s added routes %v desired routes %v", tc.mode, tc.addedRoutes, tc.desiredPeerCIDRs)
-		routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: tc.mode, IPv4Enabled: true}, false, false, false, false)
+		routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: tc.mode, IPv4Enabled: true}, false, false, false, false, nil)
 		assert.NoError(t, err)
 		err = routeClient.Initialize(nodeConfig, func() {})
 		assert.NoError(t, err)
@@ -574,7 +570,7 @@ func TestReconcile(t *testing.T) {
 			assert.NoError(t, routeClient.AddRoutes(peerNet, tc.nodeName, route.peerIP, peerGwIP), "adding routes failed")
 		}
 
-		assert.NoError(t, routeClient.Reconcile(tc.desiredPeerCIDRs, tc.desiredServices), "reconcile failed")
+		assert.NoError(t, routeClient.Reconcile(tc.desiredPeerCIDRs), "reconcile failed")
 
 		for dst, uplink := range tc.expRoutes {
 			expNum := 0
@@ -602,7 +598,7 @@ func TestRouteTablePolicyOnly(t *testing.T) {
 	gwLink := createDummyGW(t)
 	defer netlink.LinkDel(gwLink)
 
-	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeNetworkPolicyOnly, IPv4Enabled: true}, false, false, false, false)
+	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeNetworkPolicyOnly, IPv4Enabled: true}, false, false, false, false, nil)
 	assert.NoError(t, err)
 	err = routeClient.Initialize(nodeConfig, func() {})
 	assert.NoError(t, err)
@@ -658,7 +654,7 @@ func TestIPv6RoutesAndNeighbors(t *testing.T) {
 	gwLink := createDummyGW(t)
 	defer netlink.LinkDel(gwLink)
 
-	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeEncap, IPv4Enabled: true, IPv6Enabled: true}, false, false, false, false)
+	routeClient, err := route.NewClient(&config.NetworkConfig{TrafficEncapMode: config.TrafficEncapModeEncap, IPv4Enabled: true, IPv6Enabled: true}, false, false, false, false, nil)
 	assert.Nil(t, err)
 	_, ipv6Subnet, _ := net.ParseCIDR("fd74:ca9b:172:19::/64")
 	gwIPv6 := net.ParseIP("fd74:ca9b:172:19::1")

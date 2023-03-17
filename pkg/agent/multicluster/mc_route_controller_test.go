@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package noderoute
+package multicluster
 
 import (
 	"context"
@@ -27,47 +27,40 @@ import (
 	mcfake "antrea.io/antrea/multicluster/pkg/client/clientset/versioned/fake"
 	mcinformers "antrea.io/antrea/multicluster/pkg/client/informers/externalversions"
 	"antrea.io/antrea/pkg/agent/config"
-	"antrea.io/antrea/pkg/agent/interfacestore"
 	oftest "antrea.io/antrea/pkg/agent/openflow/testing"
-	ovsconfigtest "antrea.io/antrea/pkg/ovs/ovsconfig/testing"
 )
 
 type fakeRouteController struct {
-	*MCRouteController
+	*MCDefaultRouteController
 	mcClient        *mcfake.Clientset
 	informerFactory mcinformers.SharedInformerFactory
 	ofClient        *oftest.MockClient
-	ovsClient       *ovsconfigtest.MockOVSBridgeClient
-	interfaceStore  interfacestore.InterfaceStore
 }
 
-func newMCRouteController(t *testing.T, nodeConfig *config.NodeConfig) (*fakeRouteController, func()) {
+func newMCDefaultRouteController(t *testing.T, nodeConfig *config.NodeConfig) (*fakeRouteController, func()) {
 	mcClient := mcfake.NewSimpleClientset()
-	mcInformerFactory := mcinformers.NewSharedInformerFactory(mcClient, 60*time.Second)
+	mcInformerFactory := mcinformers.NewSharedInformerFactoryWithOptions(mcClient,
+		60*time.Second,
+		mcinformers.WithNamespace(defaultNs),
+	)
 	gwInformer := mcInformerFactory.Multicluster().V1alpha1().Gateways()
-	ciImpInformer := mcInformerFactory.Multicluster().V1alpha1().ClusterInfoImports()
-
+	ciImportInformer := mcInformerFactory.Multicluster().V1alpha1().ClusterInfoImports()
 	ctrl := gomock.NewController(t)
 	ofClient := oftest.NewMockClient(ctrl)
-	ovsClient := ovsconfigtest.NewMockOVSBridgeClient(ctrl)
-	interfaceStore := interfacestore.NewInterfaceStore()
-	c := NewMCRouteController(
+	c := NewMCDefaultRouteController(
 		mcClient,
 		gwInformer,
-		ciImpInformer,
+		ciImportInformer,
 		ofClient,
-		ovsClient,
-		interfaceStore,
 		nodeConfig,
-		"default",
+		true,
+		true,
 	)
 	return &fakeRouteController{
-		MCRouteController: c,
-		mcClient:          mcClient,
-		informerFactory:   mcInformerFactory,
-		ofClient:          ofClient,
-		ovsClient:         ovsClient,
-		interfaceStore:    interfaceStore,
+		MCDefaultRouteController: c,
+		mcClient:                 mcClient,
+		informerFactory:          mcInformerFactory,
+		ofClient:                 ofClient,
 	}, ctrl.Finish
 }
 
@@ -129,7 +122,7 @@ var (
 )
 
 func TestMCRouteControllerAsGateway(t *testing.T) {
-	c, closeFn := newMCRouteController(t, &config.NodeConfig{Name: "node-1"})
+	c, closeFn := newMCDefaultRouteController(t, &config.NodeConfig{Name: "node-1"})
 	defer closeFn()
 	defer c.queue.ShutDown()
 
@@ -153,14 +146,14 @@ func TestMCRouteControllerAsGateway(t *testing.T) {
 			Create(context.TODO(), &clusterInfoImport1, metav1.CreateOptions{})
 		peerNodeIP1 := getPeerGatewayIP(clusterInfoImport1.Spec)
 		c.ofClient.EXPECT().InstallMulticlusterGatewayFlows(clusterInfoImport1.Name,
-			gomock.Any(), peerNodeIP1, gw1GatewayIP).Times(1)
+			gomock.Any(), peerNodeIP1, gw1GatewayIP, true).Times(1)
 		c.processNextWorkItem()
 
 		c.mcClient.MulticlusterV1alpha1().ClusterInfoImports(clusterInfoImport2.GetNamespace()).
 			Create(context.TODO(), &clusterInfoImport2, metav1.CreateOptions{})
 		peerNodeIP2 := getPeerGatewayIP(clusterInfoImport2.Spec)
 		c.ofClient.EXPECT().InstallMulticlusterGatewayFlows(clusterInfoImport2.Name,
-			gomock.Any(), peerNodeIP2, gw1GatewayIP).Times(1)
+			gomock.Any(), peerNodeIP2, gw1GatewayIP, true).Times(1)
 		c.processNextWorkItem()
 
 		// Update a ClusterInfoImport
@@ -168,7 +161,7 @@ func TestMCRouteControllerAsGateway(t *testing.T) {
 		c.mcClient.MulticlusterV1alpha1().ClusterInfoImports(clusterInfoImport1.GetNamespace()).
 			Update(context.TODO(), &clusterInfoImport1, metav1.UpdateOptions{})
 		c.ofClient.EXPECT().InstallMulticlusterGatewayFlows(clusterInfoImport1.Name,
-			gomock.Any(), peerNodeIP1, gw1GatewayIP).Times(1)
+			gomock.Any(), peerNodeIP1, gw1GatewayIP, true).Times(1)
 		c.processNextWorkItem()
 
 		// Delete a ClusterInfoImport
@@ -184,7 +177,7 @@ func TestMCRouteControllerAsGateway(t *testing.T) {
 		c.mcClient.MulticlusterV1alpha1().Gateways(updatedGateway1a.GetNamespace()).Update(context.TODO(),
 			updatedGateway1a, metav1.UpdateOptions{})
 		c.ofClient.EXPECT().InstallMulticlusterGatewayFlows(clusterInfoImport1.Name,
-			gomock.Any(), peerNodeIP1, updatedGateway1aIP).Times(1)
+			gomock.Any(), peerNodeIP1, updatedGateway1aIP, true).Times(1)
 		c.processNextWorkItem()
 
 		// Update Gateway1's InternalIP
@@ -194,27 +187,17 @@ func TestMCRouteControllerAsGateway(t *testing.T) {
 			updatedGateway1b, metav1.UpdateOptions{})
 		c.processNextWorkItem()
 
-		// Create Gateway2 as active Gateway
-		c.mcClient.MulticlusterV1alpha1().Gateways(gateway2.GetNamespace()).Create(context.TODO(),
-			&gateway2, metav1.CreateOptions{})
-		c.ofClient.EXPECT().UninstallMulticlusterFlows(clusterInfoImport1.Name).Times(1)
-		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), false).Times(1)
-		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name, gomock.Any(), gw2InternalIP).Times(1)
-		c.processNextWorkItem()
-
-		// Delete Gateway2, then Gateway1 become active Gateway
-		c.mcClient.MulticlusterV1alpha1().Gateways(gateway2.GetNamespace()).Delete(context.TODO(),
-			gateway2.Name, metav1.DeleteOptions{})
-		c.ofClient.EXPECT().UninstallMulticlusterFlows(clusterInfoImport1.Name).Times(1)
-		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), true).Times(1)
-		c.ofClient.EXPECT().InstallMulticlusterGatewayFlows(clusterInfoImport1.Name,
-			gomock.Any(), peerNodeIP1, updatedGateway1aIP).Times(1)
-		c.processNextWorkItem()
-
-		// Delete last Gateway
+		// Delete Gateway1
 		c.mcClient.MulticlusterV1alpha1().Gateways(gateway1.GetNamespace()).Delete(context.TODO(),
 			gateway1.Name, metav1.DeleteOptions{})
 		c.ofClient.EXPECT().UninstallMulticlusterFlows(clusterInfoImport1.Name).Times(1)
+		c.processNextWorkItem()
+
+		// Create Gateway2 as active Gateway
+		c.mcClient.MulticlusterV1alpha1().Gateways(gateway2.GetNamespace()).Create(context.TODO(),
+			&gateway2, metav1.CreateOptions{})
+		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), false).Times(1)
+		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name, gomock.Any(), gw2InternalIP, true).Times(1)
 		c.processNextWorkItem()
 	}()
 	select {
@@ -225,7 +208,7 @@ func TestMCRouteControllerAsGateway(t *testing.T) {
 }
 
 func TestMCRouteControllerAsRegularNode(t *testing.T) {
-	c, closeFn := newMCRouteController(t, &config.NodeConfig{Name: "node-3"})
+	c, closeFn := newMCDefaultRouteController(t, &config.NodeConfig{Name: "node-3"})
 	defer closeFn()
 	defer c.queue.ShutDown()
 
@@ -250,13 +233,13 @@ func TestMCRouteControllerAsRegularNode(t *testing.T) {
 		c.mcClient.MulticlusterV1alpha1().ClusterInfoImports(clusterInfoImport1.GetNamespace()).
 			Create(context.TODO(), &clusterInfoImport1, metav1.CreateOptions{})
 		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name,
-			gomock.Any(), peerNodeIP1).Times(1)
+			gomock.Any(), peerNodeIP1, true).Times(1)
 		c.processNextWorkItem()
 
 		c.mcClient.MulticlusterV1alpha1().ClusterInfoImports(clusterInfoImport2.GetNamespace()).
 			Create(context.TODO(), &clusterInfoImport2, metav1.CreateOptions{})
 		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport2.Name,
-			gomock.Any(), peerNodeIP1).Times(1)
+			gomock.Any(), peerNodeIP1, true).Times(1)
 		c.processNextWorkItem()
 
 		// Update a ClusterInfoImport
@@ -264,7 +247,7 @@ func TestMCRouteControllerAsRegularNode(t *testing.T) {
 		c.mcClient.MulticlusterV1alpha1().ClusterInfoImports(clusterInfoImport1.GetNamespace()).
 			Update(context.TODO(), &clusterInfoImport1, metav1.UpdateOptions{})
 		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name,
-			gomock.Any(), peerNodeIP1).Times(1)
+			gomock.Any(), peerNodeIP1, true).Times(1)
 		c.processNextWorkItem()
 
 		// Delete a ClusterInfoImport
@@ -287,30 +270,20 @@ func TestMCRouteControllerAsRegularNode(t *testing.T) {
 		c.mcClient.MulticlusterV1alpha1().Gateways(updatedGateway1b.GetNamespace()).Update(context.TODO(),
 			updatedGateway1b, metav1.UpdateOptions{})
 		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name,
-			gomock.Any(), updatedGateway1bIP).Times(1)
+			gomock.Any(), updatedGateway1bIP, true).Times(1)
+		c.processNextWorkItem()
+
+		// Delete Gateway1
+		c.mcClient.MulticlusterV1alpha1().Gateways(gateway1.GetNamespace()).Delete(context.TODO(),
+			gateway1.Name, metav1.DeleteOptions{})
+		c.ofClient.EXPECT().UninstallMulticlusterFlows(clusterInfoImport1.Name).Times(1)
 		c.processNextWorkItem()
 
 		// Create Gateway2 as the active Gateway
 		c.mcClient.MulticlusterV1alpha1().Gateways(gateway2.GetNamespace()).Create(context.TODO(),
 			&gateway2, metav1.CreateOptions{})
 		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), false).Times(1)
-		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name, gomock.Any(), peerNodeIP2).Times(1)
-		c.ofClient.EXPECT().UninstallMulticlusterFlows(clusterInfoImport1.Name).Times(1)
-		c.processNextWorkItem()
-
-		// Delete Gateway2, then Gateway1 become active Gateway
-		c.mcClient.MulticlusterV1alpha1().Gateways(gateway2.GetNamespace()).Delete(context.TODO(),
-			gateway2.Name, metav1.DeleteOptions{})
-		c.ofClient.EXPECT().UninstallMulticlusterFlows(clusterInfoImport1.Name).Times(1)
-		c.ofClient.EXPECT().InstallMulticlusterClassifierFlows(uint32(1), false).Times(1)
-		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name,
-			gomock.Any(), updatedGateway1bIP).Times(1)
-		c.processNextWorkItem()
-
-		// Delete last Gateway
-		c.mcClient.MulticlusterV1alpha1().Gateways(gateway1.GetNamespace()).Delete(context.TODO(),
-			gateway1.Name, metav1.DeleteOptions{})
-		c.ofClient.EXPECT().UninstallMulticlusterFlows(clusterInfoImport1.Name).Times(1)
+		c.ofClient.EXPECT().InstallMulticlusterNodeFlows(clusterInfoImport1.Name, gomock.Any(), peerNodeIP2, true).Times(1)
 		c.processNextWorkItem()
 	}()
 	select {

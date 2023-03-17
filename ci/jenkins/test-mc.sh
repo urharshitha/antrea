@@ -190,6 +190,9 @@ function wait_for_antrea_multicluster_pods_ready {
 
 function wait_for_multicluster_controller_ready {
     echo "====== Deploying Antrea Multicluster Leader Cluster with ${LEADER_CLUSTER_CONFIG} ======"
+    leader_cluster_pod_cidr="10.244.0.0/20"
+    export leader_cluster_pod_cidr
+    perl -0777 -pi -e 's|    podCIDRs\:\n      - \"\"|    podCIDRs\:\n      - $ENV{leader_cluster_pod_cidr}|g' ./multicluster/test/yamls/leader-manifest.yml
     kubectl create ns antrea-multicluster  "${LEADER_CLUSTER_CONFIG}" || true
     kubectl apply -f ./multicluster/build/yamls/antrea-multicluster-leader-global.yml "${LEADER_CLUSTER_CONFIG}"
     kubectl apply -f ./multicluster/test/yamls/leader-manifest.yml "${LEADER_CLUSTER_CONFIG}"
@@ -206,10 +209,17 @@ function wait_for_multicluster_controller_ready {
     sed -i 's/antrea-multicluster/kube-system/g' ./multicluster/test/yamls/leader-access-token.yml
     echo "type: Opaque" >> ./multicluster/test/yamls/leader-access-token.yml
 
-    for config in "${membercluster_kubeconfigs[@]}";
+    member_cluster_pod_cidrs=("10.244.16.0/20" "10.244.32.0/20")
+    for i in "${!membercluster_kubeconfigs[@]}";
     do
+        pod_cidr=${member_cluster_pod_cidrs[$i]}
+        export pod_cidr
+        cp ./multicluster/test/yamls/member-manifest.yml ./multicluster/test/yamls/member-manifest-$i.yml
+        perl -0777 -pi -e 's|    podCIDRs\:\n      - \"\"|    podCIDRs\:\n      - $ENV{pod_cidr}|g' ./multicluster/test/yamls/member-manifest-$i.yml
+
+        config=${membercluster_kubeconfigs[$i]}
         echo "====== Deploying Antrea Multicluster Member Cluster with ${config} ======"
-        kubectl apply -f ./multicluster/test/yamls/member-manifest.yml ${config}
+        kubectl apply -f ./multicluster/test/yamls/member-manifest-$i.yml ${config}
         kubectl rollout status deployment/antrea-mc-controller -n kube-system ${config}
         kubectl apply -f ./multicluster/test/yamls/leader-access-token.yml ${config}
     done
@@ -248,6 +258,25 @@ function run_codecov { (set -e
     rm -f trustedkeys.gpg codecov
 )}
 
+function modify_config {
+  if [[ ${ENABLE_MC_GATEWAY} == "true" ]]; then
+  cat > build/yamls/chart-values/antrea.yml << EOF
+multicluster:
+  enableGateway: true
+  enableStretchedNetworkPolicy: true
+  enablePodToPodConnectivity: true
+featureGates: {
+  Multicluster: true
+}
+EOF
+  make manifest
+  cd multicluster
+  sed -i 's/enableStretchedNetworkPolicy: false/enableStretchedNetworkPolicy: true/g' config/default/configmap/controller_manager_config.yaml
+  make manifests
+  cd ..
+  fi
+}
+
 function deliver_antrea_multicluster {
     echo "====== Building Antrea for the Following Commit ======"
     export GO111MODULE=on
@@ -264,7 +293,7 @@ function deliver_antrea_multicluster {
     chmod -R g-w build/images/base
 
     DOCKER_REGISTRY="${DOCKER_REGISTRY}" ./hack/build-antrea-linux-all.sh --pull
-    echo "====== Delivering Antrea to all the Nodes ======"
+    echo "====== Delivering Antrea to all Nodes ======"
     docker save -o ${WORKDIR}/antrea-ubuntu.tar antrea/antrea-ubuntu:latest
 
 
@@ -331,8 +360,10 @@ function deliver_multicluster_controller {
     sed -i "s|<LEADER_CLUSTER_IP>|${leader_ip}|" ./multicluster/test/yamls/west-member-cluster.yml
     if [[ ${KIND} == "true" ]]; then
         docker cp ./multicluster/test/yamls/test-acnp-copy-span-ns-isolation.yml leader-control-plane:/root/test-acnp-copy-span-ns-isolation.yml
+        docker cp ./multicluster/test/yamls/test-acnp-cross-cluster-ns-isolation.yml leader-control-plane:/root/test-acnp-cross-cluster-ns-isolation.yml
     else
         rsync -avr --progress --inplace -e "ssh -o StrictHostKeyChecking=no" ./multicluster/test/yamls/test-acnp-copy-span-ns-isolation.yml jenkins@["${leader_ip}"]:"${WORKDIR}"/test-acnp-copy-span-ns-isolation.yml
+        rsync -avr --progress --inplace -e "ssh -o StrictHostKeyChecking=no" ./multicluster/test/yamls/test-acnp-cross-cluster-ns-isolation.yml jenkins@["${leader_ip}"]:"${WORKDIR}"/test-acnp-cross-cluster-ns-isolation.yml
     fi
 
     for kubeconfig in "${membercluster_kubeconfigs[@]}"
@@ -357,16 +388,6 @@ function run_multicluster_e2e {
     export GOCACHE=${WORKDIR}/.cache/go-build
     export PATH=$GOROOT/bin:$PATH
 
-    if [[ ${ENABLE_MC_GATEWAY} == "true" ]]; then
-    cat > build/yamls/chart-values/antrea.yml <<EOF
-multicluster:
-  enable: true
-featureGates: {
-  Multicluster: true
-}
-EOF
-    make manifest
-    fi
     wait_for_antrea_multicluster_pods_ready "${LEADER_CLUSTER_CONFIG}"
     wait_for_antrea_multicluster_pods_ready "${EAST_CLUSTER_CONFIG}"
     wait_for_antrea_multicluster_pods_ready "${WEST_CLUSTER_CONFIG}"
@@ -422,6 +443,8 @@ EOF
     fi
     set +x
     set -e
+
+    tar -zcf antrea-test-logs.tar.gz antrea-multicluster-test-logs
 }
 
 function collect_coverage {
@@ -447,8 +470,9 @@ clean_images
 if [[ ${KIND} == "true" ]]; then
     # Preparing a ClusterSet contains three Kind clusters.
     SERVICE_CIDRS=("10.96.10.0/24" "10.96.20.0/24" "10.96.30.0/24")
+    POD_CIDRS=("10.244.0.0/20" "10.244.16.0/20" "10.244.32.0/20")
     for i in {0..2}; do
-        ./ci/kind/kind-setup.sh create ${CLUSTER_NAMES[$i]} --service-cidr ${SERVICE_CIDRS[$i]} --num-workers 1
+        ./ci/kind/kind-setup.sh create ${CLUSTER_NAMES[$i]} --service-cidr ${SERVICE_CIDRS[$i]} --pod-cidr ${POD_CIDRS[$i]} --num-workers 1
     done
 
     for name in ${CLUSTER_NAMES[*]}; do
@@ -471,6 +495,7 @@ set -e
 
 if [[ ${TESTCASE} =~ "e2e" ]]; then
     deliver_antrea_multicluster
+    modify_config
     deliver_multicluster_controller
     run_multicluster_e2e
     if $COVERAGE;then

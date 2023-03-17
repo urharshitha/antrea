@@ -177,7 +177,7 @@ func (e *IPFIXExporter) initExportingProcess() error {
 			CollectorProtocol:   e.externalFlowCollectorProto,
 			ObservationDomainID: e.observationDomainID,
 			TempRefTimeout:      0,
-			IsEncrypted:         false,
+			TLSClientConfig:     nil,
 			SendJSONRecord:      e.sendJSONRecord,
 		}
 	} else {
@@ -187,11 +187,11 @@ func (e *IPFIXExporter) initExportingProcess() error {
 			CollectorProtocol:   e.externalFlowCollectorProto,
 			ObservationDomainID: e.observationDomainID,
 			TempRefTimeout:      1800,
-			IsEncrypted:         false,
+			TLSClientConfig:     nil,
 			SendJSONRecord:      e.sendJSONRecord,
 		}
 	}
-	ep, err := ipfix.NewIPFIXExportingProcess(expInput)
+	ep, err := exporter.InitExportingProcess(expInput)
 	if err != nil {
 		return fmt.Errorf("got error when initializing IPFIX exporting process: %v", err)
 	}

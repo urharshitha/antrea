@@ -111,6 +111,10 @@ var (
 	}
 )
 
+var (
+	antreaIPAMNamespaces = []string{testAntreaIPAMNamespace, testAntreaIPAMNamespace11, testAntreaIPAMNamespace12}
+)
+
 func TestAntreaIPAM(t *testing.T) {
 	skipIfNotAntreaIPAMTest(t)
 
@@ -122,7 +126,7 @@ func TestAntreaIPAM(t *testing.T) {
 
 	// Create AntreaIPAM IPPool and test Namespace
 	var ipPools []string
-	for _, namespace := range []string{testAntreaIPAMNamespace, testAntreaIPAMNamespace11, testAntreaIPAMNamespace12} {
+	for _, namespace := range antreaIPAMNamespaces {
 		ipPool, err := createIPPool(t, data, namespace)
 		if err != nil {
 			t.Fatalf("Creating IPPool failed, err=%+v", err)
@@ -336,7 +340,7 @@ func testAntreaIPAMStatefulSet(t *testing.T, data *TestData, dedicatedIPPoolKey 
 	if err != nil {
 		t.Fatalf("Error when creating Pod '%s': %v", podName, err)
 	}
-	defer data.deletePodAndWait(defaultTimeout, podName, testAntreaIPAMNamespace)
+	defer data.DeletePodAndWait(defaultTimeout, podName, testAntreaIPAMNamespace)
 	podIPs, err := data.podWaitForIPs(defaultTimeout, podName, testAntreaIPAMNamespace)
 	if err != nil {
 		t.Fatalf("Error when waiting Pod IPs: %v", err)
@@ -376,7 +380,7 @@ func testAntreaIPAMStatefulSet(t *testing.T, data *TestData, dedicatedIPPoolKey 
 	}
 	checkStatefulSetIPPoolAllocation(t, data, stsName, testAntreaIPAMNamespace, ipPoolName, ipOffsets, reservedIPOffsets)
 
-	data.deletePodAndWait(defaultTimeout, podName, testAntreaIPAMNamespace)
+	data.DeletePodAndWait(defaultTimeout, podName, testAntreaIPAMNamespace)
 	_, err = data.restartStatefulSet(stsName, testAntreaIPAMNamespace)
 	if err != nil {
 		t.Fatalf("Error when restarting StatefulSet '%s': %v", stsName, err)
@@ -518,10 +522,15 @@ func checkIPPoolAllocation(tb testing.TB, data *TestData, ipPoolName, podIPStrin
 
 func deleteIPPoolWrapper(tb testing.TB, data *TestData, name string) {
 	tb.Logf("Deleting IPPool '%s'", name)
-	if err := data.crdClient.CrdV1alpha2().IPPools().Delete(context.TODO(), name, metav1.DeleteOptions{}); err != nil {
-		ipPool, _ := data.crdClient.CrdV1alpha2().IPPools().Get(context.TODO(), name, metav1.GetOptions{})
-		ipPoolJson, _ := json.Marshal(ipPool)
-		tb.Logf("Error when deleting IPPool, err: %v, data: %s", err, ipPoolJson)
+	for i := 0; i < 10; i++ {
+		if err := data.crdClient.CrdV1alpha2().IPPools().Delete(context.TODO(), name, metav1.DeleteOptions{}); err != nil {
+			ipPool, _ := data.crdClient.CrdV1alpha2().IPPools().Get(context.TODO(), name, metav1.GetOptions{})
+			ipPoolJson, _ := json.Marshal(ipPool)
+			tb.Logf("Error when deleting IPPool, err: %v, data: %s", err, ipPoolJson)
+			time.Sleep(defaultInterval)
+		} else {
+			break
+		}
 	}
 }
 

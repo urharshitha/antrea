@@ -25,7 +25,7 @@ import (
 	"time"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
-	"github.com/containernetworking/cni/pkg/types/current"
+	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/containernetworking/plugins/pkg/ip"
 	"google.golang.org/grpc"
@@ -117,6 +117,7 @@ type CNIServer struct {
 	enableSecondaryNetworkIPAM bool
 	disableTXChecksumOffload   bool
 	secondaryNetworkEnabled    bool
+	networkConfig              *config.NetworkConfig
 	// networkReadyCh notifies that the network is ready so new Pods can be created. Therefore, CmdAdd waits for it.
 	networkReadyCh <-chan struct{}
 }
@@ -176,7 +177,7 @@ func updateResultIfaceConfig(result *current.Result, defaultIPv4Gateway net.IP, 
 	}
 }
 
-func resultToResponse(result *current.Result) *cnipb.CniCmdResponse {
+func resultToResponse(result cnitypes.Result) *cnipb.CniCmdResponse {
 	var resultBytes bytes.Buffer
 	_ = result.PrintTo(&resultBytes)
 	return &cnipb.CniCmdResponse{CniResult: resultBytes.Bytes()}
@@ -192,7 +193,7 @@ func (s *CNIServer) loadNetworkConfig(request *cnipb.CniCmdRequest) (*CNIConfig,
 		return nil, err
 	}
 	if cniConfig.MTU == 0 {
-		cniConfig.MTU = s.nodeConfig.NodeMTU
+		cniConfig.MTU = s.networkConfig.InterfaceMTU
 	}
 	cniConfig.CniCmdArgs = request.CniArgs
 	klog.V(3).Infof("Load network configurations: %v", cniConfig)
@@ -358,6 +359,7 @@ func (s *CNIServer) parsePrevResultFromRequest(networkConfig *types.NetworkConfi
 		klog.Errorf("Failed to construct prevResult using previous network configuration")
 		return nil, s.unsupportedFieldResponse("prevResult", networkConfig.PrevResult)
 	}
+	prevResult.CNIVersion = networkConfig.CNIVersion
 	return prevResult, nil
 }
 
@@ -389,25 +391,33 @@ func (s *CNIServer) GetPodConfigurator() *podConfigurator {
 	return s.podConfigurator
 }
 
+// Declared variables for testing
+var (
+	ipamSecondaryNetworkAdd   = ipam.SecondaryNetworkAdd
+	ipamSecondaryNetworkDel   = ipam.SecondaryNetworkDel
+	ipamSecondaryNetworkCheck = ipam.SecondaryNetworkCheck
+)
+
 // Antrea IPAM for secondary network.
 func (s *CNIServer) ipamAdd(cniConfig *CNIConfig) (*cnipb.CniCmdResponse, error) {
-	ipamResult, err := ipam.SecondaryNetworkAdd(cniConfig.CniCmdArgs, cniConfig.K8sArgs, cniConfig.NetworkConfig)
+	ipamResult, err := ipamSecondaryNetworkAdd(cniConfig.CniCmdArgs, cniConfig.K8sArgs, cniConfig.NetworkConfig)
 	if err != nil {
 		return s.ipamFailureResponse(err), nil
 	}
+	cniResult, _ := ipamResult.GetAsVersion(cniConfig.CNIVersion)
 	klog.InfoS("Allocated IP addresses", "container", cniConfig.ContainerId, "result", ipamResult)
-	return resultToResponse(ipamResult), nil
+	return resultToResponse(cniResult), nil
 }
 
 func (s *CNIServer) ipamDel(cniConfig *CNIConfig) (*cnipb.CniCmdResponse, error) {
-	if err := ipam.SecondaryNetworkDel(cniConfig.CniCmdArgs, cniConfig.K8sArgs, cniConfig.NetworkConfig); err != nil {
+	if err := ipamSecondaryNetworkDel(cniConfig.CniCmdArgs, cniConfig.K8sArgs, cniConfig.NetworkConfig); err != nil {
 		return s.ipamFailureResponse(err), nil
 	}
 	return &cnipb.CniCmdResponse{CniResult: []byte("")}, nil
 }
 
 func (s *CNIServer) ipamCheck(cniConfig *CNIConfig) (*cnipb.CniCmdResponse, error) {
-	if err := ipam.SecondaryNetworkCheck(cniConfig.CniCmdArgs, cniConfig.K8sArgs, cniConfig.NetworkConfig); err != nil {
+	if err := ipamSecondaryNetworkCheck(cniConfig.CniCmdArgs, cniConfig.K8sArgs, cniConfig.NetworkConfig); err != nil {
 		return s.ipamFailureResponse(err), nil
 	}
 	// CNI CHECK is not implemented for secondary network IPAM, and so the func will always
@@ -438,8 +448,7 @@ func (s *CNIServer) CmdAdd(ctx context.Context, request *cnipb.CniCmdRequest) (*
 	case <-s.networkReadyCh:
 	}
 
-	cniVersion := cniConfig.CNIVersion
-	result := &ipam.IPAMResult{Result: current.Result{CNIVersion: cniVersion}}
+	result := &ipam.IPAMResult{Result: current.Result{CNIVersion: current.ImplementedSpecVersion}}
 	netNS := s.hostNetNsPath(cniConfig.Netns)
 	isInfraContainer := isInfraContainer(netNS)
 
@@ -473,7 +482,7 @@ func (s *CNIServer) CmdAdd(ctx context.Context, request *cnipb.CniCmdRequest) (*
 	var ipamResult *ipam.IPAMResult
 	var err error
 	// Only allocate IP when handling CNI request from infra container.
-	// On windows platform, CNI plugin is called for all containers in a Pod.
+	// On Windows platform, CNI plugin is called for all containers in a Pod.
 	if !isInfraContainer {
 		if ipamResult, _ = ipam.GetIPFromCache(infraContainer); ipamResult == nil {
 			return nil, fmt.Errorf("allocated IP address not found")
@@ -512,6 +521,8 @@ func (s *CNIServer) CmdAdd(ctx context.Context, request *cnipb.CniCmdRequest) (*
 		klog.Errorf("Failed to configure interfaces for container %s: %v", cniConfig.ContainerId, err)
 		return s.configInterfaceFailureResponse(err), nil
 	}
+	cniVersion := cniConfig.CNIVersion
+	cniResult, _ := result.Result.GetAsVersion(cniVersion)
 
 	klog.Infof("CmdAdd for container %v succeeded", cniConfig.ContainerId)
 	// mark success as true to avoid rollback
@@ -525,7 +536,7 @@ func (s *CNIServer) CmdAdd(ctx context.Context, request *cnipb.CniCmdRequest) (*
 		s.podConfigurator.podInfoStore.AddCNIConfigInfo(cniInfo)
 	}
 
-	return resultToResponse(&result.Result), nil
+	return resultToResponse(cniResult), nil
 }
 
 func (s *CNIServer) CmdDel(_ context.Context, request *cnipb.CniCmdRequest) (
@@ -619,6 +630,7 @@ func New(
 	kubeClient clientset.Interface,
 	routeClient route.Interface,
 	isChaining, enableBridgingMode, enableSecondaryNetworkIPAM, disableTXChecksumOffload bool,
+	networkConfig *config.NetworkConfig,
 	networkReadyCh <-chan struct{},
 ) *CNIServer {
 	return &CNIServer{
@@ -634,6 +646,7 @@ func New(
 		enableBridgingMode:         enableBridgingMode,
 		disableTXChecksumOffload:   disableTXChecksumOffload,
 		enableSecondaryNetworkIPAM: enableSecondaryNetworkIPAM,
+		networkConfig:              networkConfig,
 		networkReadyCh:             networkReadyCh,
 	}
 }
@@ -708,6 +721,18 @@ func (s *CNIServer) interceptAdd(cniConfig *CNIConfig) (*cnipb.CniCmdResponse, e
 		prevResult.IPs,
 		s.containerAccess); err != nil {
 		return &cnipb.CniCmdResponse{CniResult: []byte("")}, fmt.Errorf("failed to connect container %s to ovs: %w", cniConfig.ContainerId, err)
+	}
+
+	// Packets for multi-cluster traffic will always be encapsulated and sent through
+	// tunnels. So here we need to reduce interface MTU for different tunnel types.
+	if s.networkConfig.MTUDeduction != 0 {
+		if err := s.podConfigurator.ifConfigurator.changeContainerMTU(
+			s.hostNetNsPath(cniConfig.Netns),
+			cniConfig.Ifname,
+			s.networkConfig.MTUDeduction,
+		); err != nil {
+			return &cnipb.CniCmdResponse{CniResult: []byte("")}, fmt.Errorf("failed to change container %s's MTU: %w", cniConfig.ContainerId, err)
+		}
 	}
 
 	// we return prevResult, which should be exactly what we received from

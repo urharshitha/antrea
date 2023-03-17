@@ -431,7 +431,7 @@ func TestNodePortAndEgressWithTheSameBackendPod(t *testing.T) {
 	nodePortIP := controlPlaneNodeIPv4()
 	ipProtocol := corev1.IPv4Protocol
 	var portStr string
-	nodePortSvc, err := data.createNginxNodePortService("test-nodeport-svc", true, false, &ipProtocol)
+	nodePortSvc, err := data.createNginxNodePortService("test-nodeport-svc", data.testNamespace, true, false, &ipProtocol)
 	require.NoError(t, err)
 	for _, port := range nodePortSvc.Spec.Ports {
 		if port.NodePort != 0 {
@@ -650,7 +650,7 @@ func testProxyServiceSessionAffinity(ipFamily *corev1.IPFamily, ingressIPs []str
 
 	require.NoError(t, data.createNginxPodOnNode(nginx, data.testNamespace, nodeName, false))
 	nginxIP, err := data.podWaitForIPs(defaultTimeout, nginx, data.testNamespace)
-	defer data.deletePodAndWait(defaultTimeout, nginx, data.testNamespace)
+	defer data.DeletePodAndWait(defaultTimeout, nginx, data.testNamespace)
 	require.NoError(t, err)
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, nginx, data.testNamespace))
 	svc, err := data.createNginxClusterIPService(nginx, data.testNamespace, true, ipFamily)
@@ -662,7 +662,7 @@ func testProxyServiceSessionAffinity(ipFamily *corev1.IPFamily, ingressIPs []str
 
 	busyboxPod := randName("busybox-")
 	require.NoError(t, data.createBusyboxPodOnNode(busyboxPod, data.testNamespace, nodeName, false))
-	defer data.deletePodAndWait(defaultTimeout, busyboxPod, data.testNamespace)
+	defer data.DeletePodAndWait(defaultTimeout, busyboxPod, data.testNamespace)
 	require.NoError(t, data.podWaitForRunning(defaultTimeout, busyboxPod, data.testNamespace))
 	stdout, stderr, err := data.runWgetCommandOnBusyboxWithRetry(busyboxPod, data.testNamespace, svc.Spec.ClusterIP, 5)
 	require.NoError(t, err, fmt.Sprintf("ipFamily: %v\nstdout: %s\nstderr: %s\n", *ipFamily, stdout, stderr))
@@ -978,7 +978,7 @@ func testProxyEndpointLifeCycle(ipFamily *corev1.IPFamily, data *TestData, t *te
 		require.Contains(t, groupOutput, k)
 	}
 
-	require.NoError(t, data.deletePodAndWait(defaultTimeout, nginx, data.testNamespace))
+	require.NoError(t, data.DeletePodAndWait(defaultTimeout, nginx, data.testNamespace))
 
 	// Wait for one second to make sure the pipeline to be updated.
 	time.Sleep(time.Second)
@@ -1032,7 +1032,7 @@ func testProxyServiceLifeCycle(ipFamily *corev1.IPFamily, ingressIPs []string, d
 	nginx := randName("nginx-")
 
 	require.NoError(t, data.createNginxPodOnNode(nginx, data.testNamespace, nodeName, false))
-	defer data.deletePodAndWait(defaultTimeout, nginx, data.testNamespace)
+	defer data.DeletePodAndWait(defaultTimeout, nginx, data.testNamespace)
 	nginxIPs, err := data.podWaitForIPs(defaultTimeout, nginx, data.testNamespace)
 	require.NoError(t, err)
 	var nginxIP string

@@ -45,7 +45,7 @@ const (
 	defaultHostProcPathPrefix      = "/host"
 	defaultServiceCIDR             = "10.96.0.0/12"
 	defaultTunnelType              = ovsconfig.GeneveTunnel
-	defaultFlowCollectorAddress    = "flow-aggregator.flow-aggregator.svc:4739:tls"
+	defaultFlowCollectorAddress    = "flow-aggregator/flow-aggregator:4739:tls"
 	defaultFlowCollectorTransport  = "tls"
 	defaultFlowCollectorPort       = "4739"
 	defaultFlowPollInterval        = 5 * time.Second
@@ -55,6 +55,7 @@ const (
 	defaultStaleConnectionTimeout  = 5 * time.Minute
 	defaultNPLPortRange            = "61000-62000"
 	defaultNodeType                = config.K8sNode
+	defaultMaxEgressIPsPerNode     = 255
 )
 
 type Options struct {
@@ -306,6 +307,26 @@ func (o *Options) validateAntreaIPAMConfig() error {
 	return nil
 }
 
+func (o *Options) validateMulticlusterConfig(encapMode config.TrafficEncapModeType, encryptionMode config.TrafficEncryptionModeType) error {
+	if !o.config.Multicluster.EnableGateway && !o.config.Multicluster.EnableStretchedNetworkPolicy {
+		return nil
+	}
+
+	if !features.DefaultFeatureGate.Enabled(features.Multicluster) {
+		klog.InfoS("Multicluster feature gate is disabled. Multi-cluster options are ignored")
+		return nil
+	}
+
+	if !o.config.Multicluster.EnableGateway && o.config.Multicluster.EnableStretchedNetworkPolicy {
+		return fmt.Errorf("Multi-cluster Gateway must be enabled to enable StretchedNetworkPolicy")
+	}
+
+	if encapMode.SupportsEncap() && encryptionMode == config.TrafficEncryptionModeWireGuard {
+		return fmt.Errorf("Multi-cluster Gateway doesn't support in-cluster WireGuard encryption")
+	}
+	return nil
+}
+
 func (o *Options) setK8sNodeDefaultOptions() {
 	if o.config.CNISocket == "" {
 		o.config.CNISocket = cni.AntreaCNISocketAddr
@@ -381,6 +402,25 @@ func (o *Options) setK8sNodeDefaultOptions() {
 			o.igmpQueryInterval = defaultIGMPQueryInterval
 		}
 	}
+
+	if features.DefaultFeatureGate.Enabled(features.Multicluster) {
+		if o.config.Multicluster.Enable {
+			// Multicluster.Enable is deprecated but it may be set by an earlier version
+			// deployment manifest. If it is set to true, pass the value to
+			// Multicluster.EnableGateway.
+			o.config.Multicluster.EnableGateway = true
+		}
+
+		if o.config.Multicluster.EnableGateway && o.config.Multicluster.Namespace == "" {
+			o.config.Multicluster.Namespace = env.GetPodNamespace()
+		}
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.Egress) {
+		if o.config.Egress.MaxEgressIPsPerNode == 0 {
+			o.config.Egress.MaxEgressIPsPerNode = defaultMaxEgressIPsPerNode
+		}
+	}
 }
 
 func (o *Options) validateK8sNodeOptions() error {
@@ -453,11 +493,10 @@ func (o *Options) validateK8sNodeOptions() error {
 			}
 		}
 	}
-	if (features.DefaultFeatureGate.Enabled(features.Multicluster) || o.config.Multicluster.Enable) &&
-		encapMode != config.TrafficEncapModeEncap {
-		// Only Encap mode is supported for Multi-cluster feature.
-		return fmt.Errorf("Multicluster is only applicable to the %s mode", config.TrafficEncapModeEncap)
+	if err := o.validateMulticlusterConfig(encapMode, encryptionMode); err != nil {
+		return err
 	}
+
 	if features.DefaultFeatureGate.Enabled(features.NodePortLocal) {
 		startPort, endPort, err := parsePortRange(o.config.NodePortLocal.PortRange)
 		if err != nil {
@@ -479,6 +518,12 @@ func (o *Options) validateK8sNodeOptions() error {
 			return fmt.Errorf("dnsServerOverride %s is invalid: %v", o.config.DNSServerOverride, err)
 		}
 		o.dnsServerOverride = hostPort
+	}
+
+	if features.DefaultFeatureGate.Enabled(features.Egress) {
+		if o.config.Egress.MaxEgressIPsPerNode > defaultMaxEgressIPsPerNode {
+			return fmt.Errorf("maxEgressIPsPerNode cannot be greater than %d", defaultMaxEgressIPsPerNode)
+		}
 	}
 	return nil
 }

@@ -146,6 +146,8 @@ func run(o *Options) error {
 		client,
 	)
 
+	enableMulticlusterNP := features.DefaultFeatureGate.Enabled(features.Multicluster) && o.config.Multicluster.EnableStretchedNetworkPolicy
+
 	// Create Antrea object storage.
 	addressGroupStore := store.NewAddressGroupStore()
 	appliedToGroupStore := store.NewAppliedToGroupStore()
@@ -155,8 +157,6 @@ func run(o *Options) error {
 	groupEntityIndex := grouping.NewGroupEntityIndex()
 	groupEntityController := grouping.NewGroupEntityController(groupEntityIndex, podInformer, namespaceInformer, eeInformer)
 	labelIdentityIndex := labelidentity.NewLabelIdentityIndex()
-
-	multiclusterEnabled := features.DefaultFeatureGate.Enabled(features.Multicluster) && o.config.Multicluster.Enable
 	networkPolicyController := networkpolicy.NewNetworkPolicyController(client,
 		crdClient,
 		groupEntityIndex,
@@ -174,7 +174,7 @@ func run(o *Options) error {
 		appliedToGroupStore,
 		networkPolicyStore,
 		groupStore,
-		multiclusterEnabled)
+		enableMulticlusterNP)
 
 	var externalNodeController *externalnode.ExternalNodeController
 	if features.DefaultFeatureGate.Enabled(features.ExternalNode) {
@@ -317,14 +317,13 @@ func run(o *Options) error {
 
 	go groupEntityController.Run(stopCh)
 
-	if multiclusterEnabled {
+	if enableMulticlusterNP {
 		mcInformerFactoty := mcinformers.NewSharedInformerFactory(mcClient, informerDefaultResync)
 		labelIdentityInformer := mcInformerFactoty.Multicluster().V1alpha1().LabelIdentities()
 		labelIdentityController := labelidentity.NewLabelIdentityController(labelIdentityIndex, labelIdentityInformer)
 		mcInformerFactoty.Start(stopCh)
 
 		go labelIdentityIndex.Run(stopCh)
-
 		go labelIdentityController.Run(stopCh)
 	}
 

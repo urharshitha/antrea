@@ -32,6 +32,7 @@ import (
 
 	"antrea.io/antrea/pkg/agent"
 	"antrea.io/antrea/pkg/agent/config"
+	"antrea.io/antrea/pkg/agent/controller/networkpolicy/l7engine"
 	"antrea.io/antrea/pkg/agent/flowexporter/connections"
 	"antrea.io/antrea/pkg/agent/interfacestore"
 	"antrea.io/antrea/pkg/agent/openflow"
@@ -56,6 +57,11 @@ const (
 	dnsInterceptRuleID = uint32(1)
 )
 
+type L7RuleReconciler interface {
+	AddRule(ruleID, policyName string, vlanID uint32, l7Protocols []v1beta2.L7Protocol) error
+	DeleteRule(ruleID string, vlanID uint32) error
+}
+
 var emptyWatch = watch.NewEmptyWatch()
 
 // Controller is responsible for watching Antrea AddressGroups, AppliedToGroups,
@@ -71,7 +77,8 @@ var emptyWatch = watch.NewEmptyWatch()
 type Controller struct {
 	// antreaPolicyEnabled indicates whether Antrea NetworkPolicy and
 	// ClusterNetworkPolicy are enabled.
-	antreaPolicyEnabled bool
+	antreaPolicyEnabled    bool
+	l7NetworkPolicyEnabled bool
 	// antreaProxyEnabled indicates whether Antrea proxy is enabled.
 	antreaProxyEnabled bool
 	// statusManagerEnabled indicates whether a statusManager is configured.
@@ -97,6 +104,11 @@ type Controller struct {
 	// reconciler provides interfaces to reconcile the desired state of
 	// NetworkPolicy rules with the actual state of Openflow entries.
 	reconciler Reconciler
+	// l7RuleReconciler provides interfaces to reconcile the desired state of
+	// NetworkPolicy rules which have L7 rules with the actual state of Suricata rules.
+	l7RuleReconciler L7RuleReconciler
+	// l7VlanIDAllocator allocates a VLAN ID for every L7 rule.
+	l7VlanIDAllocator *l7VlanIDAllocator
 	// ofClient registers packetin for Antrea Policy logging.
 	ofClient           openflow.Client
 	antreaPolicyLogger *AntreaPolicyLogger
@@ -113,6 +125,7 @@ type Controller struct {
 	denyConnStore *connections.DenyConnectionStore
 	gwPort        uint32
 	tunPort       uint32
+	nodeConfig    *config.NodeConfig
 }
 
 // NewNetworkPolicyController returns a new *Controller.
@@ -125,6 +138,7 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 	groupCounters []proxytypes.GroupCounter,
 	groupIDUpdates <-chan string,
 	antreaPolicyEnabled bool,
+	l7NetworkPolicyEnabled bool,
 	antreaProxyEnabled bool,
 	statusManagerEnabled bool,
 	multicastEnabled bool,
@@ -134,20 +148,28 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 	nodeType config.NodeType,
 	v4Enabled bool,
 	v6Enabled bool,
-	gwPort, tunPort uint32) (*Controller, error) {
+	gwPort, tunPort uint32,
+	nodeConfig *config.NodeConfig) (*Controller, error) {
 	idAllocator := newIDAllocator(asyncRuleDeleteInterval, dnsInterceptRuleID)
 	c := &Controller{
-		antreaClientProvider: antreaClientGetter,
-		queue:                workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "networkpolicyrule"),
-		ofClient:             ofClient,
-		nodeType:             nodeType,
-		antreaPolicyEnabled:  antreaPolicyEnabled,
-		antreaProxyEnabled:   antreaProxyEnabled,
-		statusManagerEnabled: statusManagerEnabled,
-		multicastEnabled:     multicastEnabled,
-		loggingEnabled:       loggingEnabled,
-		gwPort:               gwPort,
-		tunPort:              tunPort,
+		antreaClientProvider:   antreaClientGetter,
+		queue:                  workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "networkpolicyrule"),
+		ofClient:               ofClient,
+		nodeType:               nodeType,
+		antreaPolicyEnabled:    antreaPolicyEnabled,
+		l7NetworkPolicyEnabled: l7NetworkPolicyEnabled,
+		antreaProxyEnabled:     antreaProxyEnabled,
+		statusManagerEnabled:   statusManagerEnabled,
+		multicastEnabled:       multicastEnabled,
+		loggingEnabled:         loggingEnabled,
+		gwPort:                 gwPort,
+		tunPort:                tunPort,
+		nodeConfig:             nodeConfig,
+	}
+
+	if l7NetworkPolicyEnabled {
+		c.l7RuleReconciler = l7engine.NewReconciler()
+		c.l7VlanIDAllocator = newL7VlanIDAllocator()
 	}
 
 	if antreaPolicyEnabled {
@@ -592,7 +614,7 @@ func (c *Controller) syncRule(key string) error {
 	}()
 	rule, effective, realizable := c.ruleCache.GetCompletedRule(key)
 	if !effective {
-		klog.V(2).InfoS("Rule was not effective, removing its flows", "ruleID", key)
+		klog.V(2).InfoS("Rule was not effective, removing it", "ruleID", key)
 		if err := c.reconciler.Forget(key); err != nil {
 			return err
 		}
@@ -600,6 +622,14 @@ func (c *Controller) syncRule(key string) error {
 			// We don't know whether this is a rule owned by Antrea Policy, but
 			// harmless to delete it.
 			c.statusManager.DeleteRuleRealization(key)
+		}
+		if c.l7NetworkPolicyEnabled {
+			if vlanID := c.l7VlanIDAllocator.query(key); vlanID != 0 {
+				if err := c.l7RuleReconciler.DeleteRule(key, vlanID); err != nil {
+					return err
+				}
+				c.l7VlanIDAllocator.release(key)
+			}
 		}
 		return nil
 	}
@@ -609,6 +639,17 @@ func (c *Controller) syncRule(key string) error {
 		klog.V(2).InfoS("Rule is not realizable, skipping", "ruleID", key)
 		return nil
 	}
+
+	if c.l7NetworkPolicyEnabled && len(rule.L7Protocols) != 0 {
+		// Allocate VLAN ID for the L7 rule.
+		vlanID := c.l7VlanIDAllocator.allocate(key)
+		rule.L7RuleVlanID = &vlanID
+
+		if err := c.l7RuleReconciler.AddRule(key, rule.SourceRef.ToString(), vlanID, rule.L7Protocols); err != nil {
+			return err
+		}
+	}
+
 	err := c.reconciler.Reconcile(rule)
 	if c.fqdnController != nil {
 		// No matter whether the rule reconciliation succeeds or not, fqdnController
@@ -644,6 +685,15 @@ func (c *Controller) syncRules(keys []string) error {
 		} else if !realizable {
 			klog.Errorf("Rule %s is effective but not realizable", key)
 		} else {
+			if c.l7NetworkPolicyEnabled && len(rule.L7Protocols) != 0 {
+				// Allocate VLAN ID for the L7 rule.
+				vlanID := c.l7VlanIDAllocator.allocate(key)
+				rule.L7RuleVlanID = &vlanID
+
+				if err := c.l7RuleReconciler.AddRule(key, rule.SourceRef.ToString(), vlanID, rule.L7Protocols); err != nil {
+					return err
+				}
+			}
 			allRules = append(allRules, rule)
 		}
 	}

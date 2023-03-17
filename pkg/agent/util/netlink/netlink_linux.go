@@ -14,7 +14,11 @@
 
 package netlink
 
-import "github.com/vishvananda/netlink"
+import (
+	"net"
+
+	"github.com/vishvananda/netlink"
+)
 
 // Interface is created to allow testing.
 type Interface interface {
@@ -25,6 +29,8 @@ type Interface interface {
 	RouteListFiltered(family int, filter *netlink.Route, filterMask uint64) ([]netlink.Route, error)
 
 	RouteDel(route *netlink.Route) error
+
+	AddrAdd(link netlink.Link, addr *netlink.Addr) error
 
 	AddrList(link netlink.Link, family int) ([]netlink.Addr, error)
 
@@ -39,54 +45,18 @@ type Interface interface {
 	NeighDel(neigh *netlink.Neigh) error
 
 	LinkByName(name string) (netlink.Link, error)
-}
 
-type Client struct{}
+	LinkByIndex(index int) (netlink.Link, error)
 
-func NewClient() *Client {
-	return &Client{}
-}
+	LinkSetNsFd(link netlink.Link, fd int) error
 
-func (c *Client) RouteReplace(route *netlink.Route) error {
-	return netlink.RouteReplace(route)
-}
+	LinkSetMTU(link netlink.Link, mtu int) error
 
-func (c *Client) RouteList(link netlink.Link, family int) ([]netlink.Route, error) {
-	return netlink.RouteList(link, family)
-}
+	LinkSetDown(link netlink.Link) error
 
-func (c *Client) RouteListFiltered(family int, filter *netlink.Route, filterMask uint64) ([]netlink.Route, error) {
-	return netlink.RouteListFiltered(family, filter, filterMask)
-}
+	LinkSetHardwareAddr(link netlink.Link, hwaddr net.HardwareAddr) error
 
-func (c *Client) RouteDel(route *netlink.Route) error {
-	return netlink.RouteDel(route)
-}
+	LinkSetName(link netlink.Link, name string) error
 
-func (c *Client) AddrList(link netlink.Link, family int) ([]netlink.Addr, error) {
-	return netlink.AddrList(link, family)
-}
-
-func (c *Client) AddrReplace(link netlink.Link, addr *netlink.Addr) error {
-	return netlink.AddrReplace(link, addr)
-}
-
-func (c *Client) AddrDel(link netlink.Link, addr *netlink.Addr) error {
-	return netlink.AddrDel(link, addr)
-}
-
-func (c *Client) NeighList(linkIndex, family int) ([]netlink.Neigh, error) {
-	return netlink.NeighList(linkIndex, family)
-}
-
-func (c *Client) NeighSet(neigh *netlink.Neigh) error {
-	return netlink.NeighSet(neigh)
-}
-
-func (c *Client) NeighDel(neigh *netlink.Neigh) error {
-	return netlink.NeighDel(neigh)
-}
-
-func (c *Client) LinkByName(name string) (netlink.Link, error) {
-	return netlink.LinkByName(name)
+	LinkSetUp(link netlink.Link) error
 }

@@ -638,6 +638,9 @@ spec:
                               type: string
                             namespace:
                               type: string
+                            scope:
+                              type: string
+                              enum: [ 'Cluster', 'ClusterSet' ]
                       name:
                         type: string
                       enableLogging:

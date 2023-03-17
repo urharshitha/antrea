@@ -550,6 +550,8 @@ func (r *reconciler) computeOFRulesForAdd(rule *CompletedRule, ofPriority *uint1
 		from1 := groupMembersToOFAddresses(rule.FromAddresses)
 		// Get addresses that in From IPBlock but not in Except IPBlocks.
 		from2 := ipBlocksToOFAddresses(rule.From.IPBlocks, r.ipv4Enabled, r.ipv6Enabled, isRuleAppliedToService)
+		from3 := labelIDToOFAddresses(rule.From.LabelIdentities)
+		from := append(from1, append(from2, from3...)...)
 		membersByServicesMap, servicesMap := groupMembersByServices(rule.Services, rule.TargetMembers)
 		for svcKey, members := range membersByServicesMap {
 			var toAddresses []types.Address
@@ -567,9 +569,11 @@ func (r *reconciler) computeOFRulesForAdd(rule *CompletedRule, ofPriority *uint1
 			}
 			ofRuleByServicesMap[svcKey] = &types.PolicyRule{
 				Direction:     v1beta2.DirectionIn,
-				From:          append(from1, from2...),
+				From:          from,
 				To:            toAddresses,
 				Service:       filterUnresolvablePort(servicesMap[svcKey]),
+				L7Protocols:   rule.L7Protocols,
+				L7RuleVlanID:  rule.L7RuleVlanID,
 				Action:        rule.Action,
 				Name:          rule.Name,
 				Priority:      ofPriority,
@@ -598,6 +602,8 @@ func (r *reconciler) computeOFRulesForAdd(rule *CompletedRule, ofPriority *uint1
 				From:          from,
 				To:            groupMembersToOFAddresses(members),
 				Service:       filterUnresolvablePort(servicesMap[svcKey]),
+				L7Protocols:   rule.L7Protocols,
+				L7RuleVlanID:  rule.L7RuleVlanID,
 				Action:        rule.Action,
 				Priority:      ofPriority,
 				Name:          rule.Name,
@@ -719,6 +725,8 @@ func (r *reconciler) update(lastRealized *lastRealized, newRule *CompletedRule, 
 				Direction:     v1beta2.DirectionIn,
 				To:            ofPortsToOFAddresses(newOFPorts),
 				Service:       newRule.Services,
+				L7Protocols:   newRule.L7Protocols,
+				L7RuleVlanID:  newRule.L7RuleVlanID,
 				Action:        newRule.Action,
 				Priority:      ofPriority,
 				FlowID:        ofID,
@@ -737,7 +745,7 @@ func (r *reconciler) update(lastRealized *lastRealized, newRule *CompletedRule, 
 		} else {
 			addedTo := ofPortsToOFAddresses(newOFPorts.Difference(lastRealized.podOFPorts[igmpServicesKey]))
 			deletedTo := ofPortsToOFAddresses(lastRealized.podOFPorts[igmpServicesKey].Difference(newOFPorts))
-			if err := r.updateOFRule(ofID, nil, addedTo, nil, deletedTo, ofPriority, newRule.EnableLogging); err != nil {
+			if err := r.updateOFRule(ofID, nil, addedTo, nil, deletedTo, ofPriority, newRule.EnableLogging, false); err != nil {
 				return err
 			}
 		}
@@ -774,6 +782,8 @@ func (r *reconciler) update(lastRealized *lastRealized, newRule *CompletedRule, 
 					From:          append(from1, from2...),
 					To:            toAddresses,
 					Service:       filterUnresolvablePort(servicesMap[svcKey]),
+					L7Protocols:   newRule.L7Protocols,
+					L7RuleVlanID:  newRule.L7RuleVlanID,
 					Action:        newRule.Action,
 					Priority:      ofPriority,
 					FlowID:        ofID,
@@ -806,7 +816,7 @@ func (r *reconciler) update(lastRealized *lastRealized, newRule *CompletedRule, 
 					addedTo = ofPortsToOFAddresses(newOFPorts.Difference(originalOfPortsSet))
 					deletedTo = ofPortsToOFAddresses(originalOfPortsSet.Difference(newOFPorts))
 				}
-				if err := r.updateOFRule(ofID, addedFrom, addedTo, deletedFrom, deletedTo, ofPriority, newRule.EnableLogging); err != nil {
+				if err := r.updateOFRule(ofID, addedFrom, addedTo, deletedFrom, deletedTo, ofPriority, newRule.EnableLogging, len(newRule.From.LabelIdentities) > 0); err != nil {
 					return err
 				}
 				// Delete valid servicesKey from staleOFIDs.
@@ -843,6 +853,8 @@ func (r *reconciler) update(lastRealized *lastRealized, newRule *CompletedRule, 
 					From:          from,
 					To:            groupMembersToOFAddresses(members),
 					Service:       filterUnresolvablePort(servicesMap[svcKey]),
+					L7Protocols:   newRule.L7Protocols,
+					L7RuleVlanID:  newRule.L7RuleVlanID,
 					Action:        newRule.Action,
 					Priority:      ofPriority,
 					FlowID:        ofID,
@@ -896,7 +908,7 @@ func (r *reconciler) update(lastRealized *lastRealized, newRule *CompletedRule, 
 					addedTo = svcGroupIDsToOFAddresses(newGroupIDSet.Difference(originalGroupIDSet))
 					deletedTo = svcGroupIDsToOFAddresses(originalGroupIDSet.Difference(newGroupIDSet))
 				}
-				if err := r.updateOFRule(ofID, addedFrom, addedTo, deletedFrom, deletedTo, ofPriority, newRule.EnableLogging); err != nil {
+				if err := r.updateOFRule(ofID, addedFrom, addedTo, deletedFrom, deletedTo, ofPriority, newRule.EnableLogging, false); err != nil {
 					return err
 				}
 				if r.fqdnController != nil {
@@ -933,17 +945,17 @@ func (r *reconciler) installOFRule(ofRule *types.PolicyRule) error {
 	return nil
 }
 
-func (r *reconciler) updateOFRule(ofID uint32, addedFrom []types.Address, addedTo []types.Address, deletedFrom []types.Address, deletedTo []types.Address, priority *uint16, enableLogging bool) error {
+func (r *reconciler) updateOFRule(ofID uint32, addedFrom []types.Address, addedTo []types.Address, deletedFrom []types.Address, deletedTo []types.Address, priority *uint16, enableLogging, isMCNPRule bool) error {
 	klog.V(2).Infof("Updating ofRule %d (addedFrom: %d, addedTo: %d, deleteFrom: %d, deletedTo: %d)",
 		ofID, len(addedFrom), len(addedTo), len(deletedFrom), len(deletedTo))
 	// TODO: This might be unnecessarily complex and hard for error handling, consider revising the Openflow interfaces.
 	if len(addedFrom) > 0 {
-		if err := r.ofClient.AddPolicyRuleAddress(ofID, types.SrcAddress, addedFrom, priority, enableLogging); err != nil {
+		if err := r.ofClient.AddPolicyRuleAddress(ofID, types.SrcAddress, addedFrom, priority, enableLogging, isMCNPRule); err != nil {
 			return fmt.Errorf("error adding policy rule source addresses for ofRule %v: %v", ofID, err)
 		}
 	}
 	if len(addedTo) > 0 {
-		if err := r.ofClient.AddPolicyRuleAddress(ofID, types.DstAddress, addedTo, priority, enableLogging); err != nil {
+		if err := r.ofClient.AddPolicyRuleAddress(ofID, types.DstAddress, addedTo, priority, enableLogging, isMCNPRule); err != nil {
 			return fmt.Errorf("error adding policy rule destination addresses for ofRule %v: %v", ofID, err)
 		}
 	}
@@ -1205,6 +1217,15 @@ func ipBlocksToOFAddresses(ipBlocks []v1beta2.IPBlock, ipv4Enabled, ipv6Enabled,
 		}
 	}
 
+	return addresses
+}
+
+func labelIDToOFAddresses(labelIDs []uint32) []types.Address {
+	// Must not return nil as it means not restricted by addresses in Openflow implementation.
+	addresses := make([]types.Address, 0, len(labelIDs))
+	for _, labelID := range labelIDs {
+		addresses = append(addresses, openflow.NewLabelIDAddress(labelID))
+	}
 	return addresses
 }
 

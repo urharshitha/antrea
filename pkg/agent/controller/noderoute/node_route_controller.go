@@ -40,9 +40,9 @@ import (
 	"antrea.io/antrea/pkg/agent/util"
 	"antrea.io/antrea/pkg/agent/wireguard"
 	"antrea.io/antrea/pkg/ovs/ovsconfig"
+	"antrea.io/antrea/pkg/ovs/ovsctl"
 	utilip "antrea.io/antrea/pkg/util/ip"
 	"antrea.io/antrea/pkg/util/k8s"
-	"antrea.io/antrea/pkg/util/runtime"
 )
 
 const (
@@ -65,6 +65,7 @@ type Controller struct {
 	kubeClient       clientset.Interface
 	ovsBridgeClient  ovsconfig.OVSBridgeClient
 	ofClient         openflow.Client
+	ovsCtlClient     ovsctl.OVSCtlClient
 	routeClient      route.Interface
 	interfaceStore   interfacestore.InterfaceStore
 	networkConfig    *config.NetworkConfig
@@ -72,7 +73,6 @@ type Controller struct {
 	nodeInformer     coreinformers.NodeInformer
 	nodeLister       corelisters.NodeLister
 	nodeListerSynced cache.InformerSynced
-	svcLister        corelisters.ServiceLister
 	queue            workqueue.RateLimitingInterface
 	// installedNodes records routes and flows installation states of Nodes.
 	// The key is the host name of the Node, the value is the nodeRouteInfo of the Node.
@@ -92,6 +92,7 @@ func NewNodeRouteController(
 	kubeClient clientset.Interface,
 	informerFactory informers.SharedInformerFactory,
 	client openflow.Client,
+	ovsCtlClient ovsctl.OVSCtlClient,
 	ovsBridgeClient ovsconfig.OVSBridgeClient,
 	routeClient route.Interface,
 	interfaceStore interfacestore.InterfaceStore,
@@ -102,11 +103,11 @@ func NewNodeRouteController(
 	ipsecCertificateManager ipseccertificate.Manager,
 ) *Controller {
 	nodeInformer := informerFactory.Core().V1().Nodes()
-	svcLister := informerFactory.Core().V1().Services()
 	controller := &Controller{
 		kubeClient:              kubeClient,
 		ovsBridgeClient:         ovsBridgeClient,
 		ofClient:                client,
+		ovsCtlClient:            ovsCtlClient,
 		routeClient:             routeClient,
 		interfaceStore:          interfaceStore,
 		networkConfig:           networkConfig,
@@ -114,7 +115,6 @@ func NewNodeRouteController(
 		nodeInformer:            nodeInformer,
 		nodeLister:              nodeInformer.Lister(),
 		nodeListerSynced:        nodeInformer.Informer().HasSynced,
-		svcLister:               svcLister.Lister(),
 		queue:                   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "noderoute"),
 		installedNodes:          cache.NewIndexer(nodeRouteInfoKeyFunc, cache.Indexers{nodeRouteInfoPodCIDRIndexName: nodeRouteInfoPodCIDRIndexFunc}),
 		wireGuardClient:         wireguardClient,
@@ -203,27 +203,10 @@ func (c *Controller) removeStaleGatewayRoutes() error {
 		desiredPodCIDRs = append(desiredPodCIDRs, podCIDRs...)
 	}
 
-	// TODO: This is not the best place to keep the ClusterIP Service routes.
-	desiredClusterIPSvcIPs := map[string]bool{}
-	if c.proxyAll && runtime.IsWindowsPlatform() {
-		// The route for virtual IP -> antrea-gw0 should be always kept.
-		desiredClusterIPSvcIPs[config.VirtualServiceIPv4.String()] = true
-
-		svcs, err := c.svcLister.List(labels.Everything())
-		for _, svc := range svcs {
-			for _, ip := range svc.Spec.ClusterIPs {
-				desiredClusterIPSvcIPs[ip] = true
-			}
-		}
-		if err != nil {
-			return fmt.Errorf("error when listing ClusterIP Service IPs: %v", err)
-		}
-	}
-
 	// routeClient will remove orphaned routes whose destinations are not in desiredPodCIDRs.
 	// If proxyAll enabled, it will also remove routes that are for Windows ClusterIP Services
 	// which no longer exist.
-	if err := c.routeClient.Reconcile(desiredPodCIDRs, desiredClusterIPSvcIPs); err != nil {
+	if err := c.routeClient.Reconcile(desiredPodCIDRs); err != nil {
 		return err
 	}
 	return nil
@@ -244,7 +227,7 @@ func (c *Controller) removeStaleTunnelPorts() error {
 	// will not include it in the set.
 	desiredInterfaces := make(map[string]bool)
 	// knownInterfaces is the list of interfaces currently in the local cache.
-	knownInterfaces := c.interfaceStore.GetInterfaceKeysByType(interfacestore.TunnelInterface)
+	knownInterfaces := c.interfaceStore.GetInterfaceKeysByType(interfacestore.IPSecTunnelInterface)
 
 	if c.networkConfig.TrafficEncryptionMode == config.TrafficEncryptionModeIPSec {
 		for _, node := range nodes {
@@ -671,15 +654,14 @@ func (c *Controller) createIPSecTunnelPort(nodeName string, nodeIP net.IP) (int3
 			}
 			c.interfaceStore.DeleteInterface(interfaceConfig)
 			exists = false
-		} else {
-			if interfaceConfig.OFPort != 0 {
-				klog.V(2).InfoS("Found cached IPsec tunnel interface", "node", nodeName, "interface", interfaceConfig.InterfaceName, "port", interfaceConfig.OFPort)
-				return interfaceConfig.OFPort, nil
-			}
 		}
 	}
+
 	if !exists {
-		ovsExternalIDs := map[string]interface{}{ovsExternalIDNodeName: nodeName}
+		ovsExternalIDs := map[string]interface{}{
+			ovsExternalIDNodeName:                 nodeName,
+			interfacestore.AntreaInterfaceTypeKey: interfacestore.AntreaIPsecTunnel,
+		}
 		portUUID, err := c.ovsBridgeClient.CreateTunnelPortExt(
 			portName,
 			c.networkConfig.TunnelType,
@@ -715,6 +697,12 @@ func (c *Controller) createIPSecTunnelPort(nodeName string, nodeIP net.IP) (int3
 		// Let NodeRouteController retry at errors.
 		return 0, fmt.Errorf("failed to get of_port of IPsec tunnel port for Node %s", nodeName)
 	}
+
+	// Set the port with no-flood to reject ARP flood packets.
+	if err := c.ovsCtlClient.SetPortNoFlood(int(ofPort)); err != nil {
+		return 0, fmt.Errorf("failed to set port %s with no-flood config: %w", portName, err)
+	}
+
 	interfaceConfig.OFPort = ofPort
 	return ofPort, nil
 }

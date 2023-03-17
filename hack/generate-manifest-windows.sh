@@ -41,6 +41,7 @@ function print_help {
     echoerr "Try '$0 --help' for more information."
 }
 
+RUNTIME=""
 MODE="dev"
 KEEP=false
 
@@ -55,6 +56,10 @@ case $key in
     ;;
     --keep)
     KEEP=true
+    shift
+    ;;
+    --containerd)
+    RUNTIME="containerd"
     shift
     ;;
     -h|--help)
@@ -104,13 +109,17 @@ TMP_DIR=$(mktemp -d $KUSTOMIZATION_DIR/overlays.XXXXXXXX)
 
 pushd $TMP_DIR > /dev/null
 
-BASE=../../base
+BASE=../../default
+if [ "$RUNTIME" == "containerd" ]; then
+    BASE=../../containerd
+fi
 
 mkdir $MODE && cd $MODE
 touch kustomization.yml
-$KUSTOMIZE edit add base $BASE
 # ../../patches/$MODE may be empty so we use find and not simply cp
 find ../../patches/$MODE -name \*.yml -exec cp {} . \;
+
+$KUSTOMIZE edit add base $BASE
 
 if [ "$MODE" == "dev" ]; then
     $KUSTOMIZE edit set image antrea-windows=antrea/antrea-windows:latest

@@ -106,20 +106,26 @@ func TestConnectivity(t *testing.T) {
 		time.Sleep(5 * time.Second)
 	}
 
-	t.Run("TestMCServiceExport", func(t *testing.T) {
+	t.Run("TestMCService", func(t *testing.T) {
 		defer tearDownForServiceExportsTest(t, data)
 		initializeForServiceExportsTest(t, data)
 		t.Run("Case=MCServiceConnectivity", func(t *testing.T) { testMCServiceConnectivity(t, data) })
 		t.Run("Case=ScaleDownMCServiceEndpoints", func(t *testing.T) { testScaleDownMCServiceEndpoints(t, data) })
 		t.Run("Case=ANPToServices", func(t *testing.T) { testANPToServices(t, data) })
+		t.Run("Case=StretchedNetworkPolicy", func(t *testing.T) { testStretchedNetworkPolicy(t, data) })
+		t.Run("Case=StretchedNetworkPolicyReject", func(t *testing.T) { testStretchedNetworkPolicyReject(t, data) })
+		t.Run("Case=StretchedNetworkPolicyUpdatePod", func(t *testing.T) { testStretchedNetworkPolicyUpdatePod(t, data) })
+		t.Run("Case=StretchedNetworkPolicyUpdateNS", func(t *testing.T) { testStretchedNetworkPolicyUpdateNS(t, data) })
+		t.Run("Case=StretchedNetworkPolicyUpdatePolicy", func(t *testing.T) { testStretchedNetworkPolicyUpdatePolicy(t, data) })
 	})
 
 	t.Run("TestAntreaPolicy", func(t *testing.T) {
 		defer tearDownForPolicyTest()
 		initializeForPolicyTest(t, data)
-		testMCAntreaPolicy(t, data)
+		t.Run("Case=CopySpanNSIsolation", func(t *testing.T) { testAntreaPolicyCopySpanNSIsolation(t, data) })
+		t.Run("Case=CrossClusterNSIsolation", func(t *testing.T) { testAntreaPolicyCrossClusterNSIsolation(t, data) })
 	})
 	// Wait 5 seconds to let both member and leader controllers clean up all resources,
-	// otherwise, Namespace deletion may stuck into termininating status.
+	// otherwise, Namespace deletion may be stuck in terminating status.
 	time.Sleep(5 * time.Second)
 }

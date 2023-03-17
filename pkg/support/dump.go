@@ -61,6 +61,9 @@ type AgentDumper interface {
 
 	// DumpOVSPorts should create file that contains OF port descriptions under the basedir.
 	DumpOVSPorts(basedir string) error
+	// DumpMemberlist should create a file that contains state of Memberlist
+	// cluster of the agent Pod under the basedir.
+	DumpMemberlist(basedir string) error
 }
 
 // ControllerDumper is the interface for dumping runtime information of the

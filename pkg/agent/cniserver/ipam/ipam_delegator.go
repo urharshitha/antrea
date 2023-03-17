@@ -21,7 +21,7 @@ import (
 
 	"github.com/containernetworking/cni/pkg/invoke"
 	"github.com/containernetworking/cni/pkg/types"
-	"github.com/containernetworking/cni/pkg/types/current"
+	current "github.com/containernetworking/cni/pkg/types/100"
 	"k8s.io/klog/v2"
 
 	argtypes "antrea.io/antrea/pkg/agent/cniserver/types"
@@ -35,6 +35,12 @@ const (
 type IPAMDelegator struct {
 	pluginType string
 }
+
+var (
+	// Declare these two functions as variable for test
+	execPluginWithResultFunc = invoke.ExecPluginWithResult
+	execPluginNoResultFunc   = invoke.ExecPluginWithoutResult
+)
 
 func (d *IPAMDelegator) Add(args *invoke.Args, k8sArgs *argtypes.K8sArgs, networkConfig []byte) (bool, *IPAMResult, error) {
 	var success = false
@@ -80,7 +86,7 @@ func (d *IPAMDelegator) Check(args *invoke.Args, k8sArgs *argtypes.K8sArgs, netw
 	return true, nil
 }
 
-var defaultExec = &invoke.DefaultExec{
+var defaultExec invoke.Exec = &invoke.DefaultExec{
 	RawExec: &invoke.RawExec{Stderr: os.Stderr},
 }
 
@@ -111,7 +117,7 @@ func delegateWithResult(delegatePlugin string, networkConfig []byte, args *invok
 		return nil, err
 	}
 
-	return invoke.ExecPluginWithResult(ctx, pluginPath, networkConfig, args, realExec)
+	return execPluginWithResultFunc(ctx, pluginPath, networkConfig, args, realExec)
 }
 
 func delegateNoResult(delegatePlugin string, networkConfig []byte, args *invoke.Args) error {
@@ -121,7 +127,7 @@ func delegateNoResult(delegatePlugin string, networkConfig []byte, args *invoke.
 		return err
 	}
 
-	return invoke.ExecPluginWithoutResult(ctx, pluginPath, networkConfig, args, realExec)
+	return execPluginNoResultFunc(ctx, pluginPath, networkConfig, args, realExec)
 }
 
 func init() {

@@ -49,8 +49,10 @@ edit the Agent configuration in the
 | `SecondaryNetwork`        | Agent              | `false` | Alpha | v1.5          | N/A          | N/A        | Yes                |       |
 | `ServiceExternalIP`       | Agent + Controller | `false` | Alpha | v1.5          | N/A          | N/A        | Yes                |       |
 | `TrafficControl`          | Agent              | `false` | Alpha | v1.7          | N/A          | N/A        | No                 |       |
+| `Multicluster`            | Agent + Controller | `false` | Alpha | v1.7          | N/A          | N/A        | Yes                | Controller side feature gate added in v1.10.0 |
 | `ExternalNode`            | Agent              | `false` | Alpha | v1.8          | N/A          | N/A        | Yes                |       |
 | `SupportBundleCollection` | Agent + Controller | `false` | Alpha | v1.10         | N/A          | N/A        | Yes                |       |
+| `L7NetworkPolicy`         | Agent + Controller | `false` | Alpha | v1.10         | N/A          | N/A        | Yes                |       |
 
 ## Description and Requirements of Features
 
@@ -314,6 +316,19 @@ device or a remote destination via a tunnel of various types. It enables a monit
 into network traffic, including both north-south and east-west traffic. Refer to this [document](traffic-control.md)
 for more information.
 
+### Multicluster
+
+The `Multicluster` feature gate of Antrea Agent enables [Antrea Multi-cluster Gateways](multicluster/user-guide.md#multi-cluster-gateway-configuration)
+which route Multi-cluster Service and Pod traffic through tunnels across clusters, and support for
+[Multi-cluster NetworkPolicy ingress rules](multicluster/user-guide.md#ingress-rule).
+The `Multicluster` feature gate of Antrea Controller enables support for [Multi-cluster NetworkPolicy](multicluster/user-guide.md#multi-cluster-networkpolicy).
+
+#### Requirements for this Feature
+
+Antrea Multi-cluster Controller must be deployed and the cluster must join a Multi-cluster ClusterSet to configure
+Antrea Multi-cluster features. Refer to [Antrea Multi-cluster user guide](multicluster/user-guide.md) for more
+information about Multi-cluster configuration. At the moment, Antrea Multi-cluster supports only IPv4.
+
 ### ExternalNode
 
 The `ExternalNode` feature enables Antrea Agent runs on a virtual machine or a bare-metal server which is not a
@@ -341,3 +356,14 @@ More documentation will be coming in the future.
 
 User should provide a file server with this feature, and store its authentication credential in a Secret. Antrea
 Controller is required to be configured with the permission to read the Secret.
+
+### L7NetworkPolicy
+
+`L7NetworkPolicy` enables users to protect their applications by specifying how they are allowed to communicate with
+others, taking into account application context, providing fine-grained control over the network traffic beyond IP,
+transport protocol, and port. Refer to this [document](antrea-l7-network-policy.md) for more information.
+
+#### Requirements for this Feature
+
+This feature is currently only supported for Nodes running Linux, and TX checksum offloading must be disabled. Refer to
+this [document](antrea-l7-network-policy.md#prerequisites) for more information and how it can be configured.

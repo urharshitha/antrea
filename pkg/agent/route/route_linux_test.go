@@ -25,6 +25,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"antrea.io/antrea/pkg/agent/config"
+	servicecidrtest "antrea.io/antrea/pkg/agent/servicecidr/testing"
 	"antrea.io/antrea/pkg/agent/types"
 	"antrea.io/antrea/pkg/agent/util/ipset"
 	ipsettest "antrea.io/antrea/pkg/agent/util/ipset/testing"
@@ -409,6 +410,58 @@ COMMIT
 `, false, true)
 			},
 		},
+		{
+			name:                  "noencap,connectUplinkToBridge=true",
+			connectUplinkToBridge: true,
+			networkConfig: &config.NetworkConfig{
+				TrafficEncapMode: config.TrafficEncapModeNoEncap,
+				IPv4Enabled:      true,
+			},
+			nodeConfig: &config.NodeConfig{
+				PodIPv4CIDR: ip.MustParseCIDR("172.16.10.0/24"),
+				GatewayConfig: &config.GatewayConfig{
+					Name: "antrea-gw0",
+				},
+			},
+			expectedCalls: func(mockIPTables *iptablestest.MockInterfaceMockRecorder) {
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.RawTable, antreaPreRoutingChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.RawTable, iptables.PreRoutingChain, []string{"-j", antreaPreRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea prerouting rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.RawTable, antreaOutputChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.RawTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.FilterTable, antreaForwardChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.FilterTable, iptables.ForwardChain, []string{"-j", antreaForwardChain, "-m", "comment", "--comment", "Antrea: jump to Antrea forwarding rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.NATTable, antreaPostRoutingChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.NATTable, iptables.PostRoutingChain, []string{"-j", antreaPostRoutingChain, "-m", "comment", "--comment", "Antrea: jump to Antrea postrouting rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.MangleTable, antreaMangleChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.MangleTable, iptables.PreRoutingChain, []string{"-j", antreaMangleChain, "-m", "comment", "--comment", "Antrea: jump to Antrea mangle rules"})
+				mockIPTables.EnsureChain(iptables.ProtocolDual, iptables.MangleTable, antreaOutputChain)
+				mockIPTables.AppendRule(iptables.ProtocolDual, iptables.MangleTable, iptables.OutputChain, []string{"-j", antreaOutputChain, "-m", "comment", "--comment", "Antrea: jump to Antrea output rules"})
+				mockIPTables.Restore(`*raw
+:ANTREA-PREROUTING - [0:0]
+:ANTREA-OUTPUT - [0:0]
+COMMIT
+*mangle
+:ANTREA-MANGLE - [0:0]
+:ANTREA-OUTPUT - [0:0]
+-A ANTREA-OUTPUT -m comment --comment "Antrea: mark LOCAL output packets" -m addrtype --src-type LOCAL -o antrea-gw0 -j MARK --or-mark 0x80000000
+-A ANTREA-OUTPUT -m comment --comment "Antrea: mark LOCAL output packets" -m addrtype --src-type LOCAL -o  -j MARK --or-mark 0x80000000
+COMMIT
+*filter
+:ANTREA-FORWARD - [0:0]
+-A ANTREA-FORWARD -m comment --comment "Antrea: accept packets from local Pods" -i antrea-gw0 -j ACCEPT
+-A ANTREA-FORWARD -m comment --comment "Antrea: accept packets to local Pods" -o antrea-gw0 -j ACCEPT
+-A ANTREA-FORWARD -m comment --comment "Antrea: accept packets from local AntreaFlexibleIPAM Pods" -m set --match-set LOCAL-FLEXIBLE-IPAM-POD-IP src -j ACCEPT
+-A ANTREA-FORWARD -m comment --comment "Antrea: accept packets to local AntreaFlexibleIPAM Pods" -m set --match-set LOCAL-FLEXIBLE-IPAM-POD-IP dst -j ACCEPT
+COMMIT
+*nat
+:ANTREA-POSTROUTING - [0:0]
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade Pod to external packets" -s 172.16.10.0/24 -m set ! --match-set ANTREA-POD-IP dst ! -o antrea-gw0 -j MASQUERADE
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade LOCAL traffic" -o antrea-gw0 -m addrtype ! --src-type LOCAL --limit-iface-out -m addrtype --src-type LOCAL -j MASQUERADE --random-fully
+-A ANTREA-POSTROUTING -m comment --comment "Antrea: masquerade traffic to local AntreaIPAM hostPort Pod" ! -s 172.16.10.0/24 -m set --match-set LOCAL-FLEXIBLE-IPAM-POD-IP dst -j MASQUERADE
+COMMIT
+`, false, false)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -561,11 +614,14 @@ func TestInitServiceIPRoutes(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			mockNetlink := netlinktest.NewMockInterface(ctrl)
+			mockServiceCIDRProvider := servicecidrtest.NewMockInterface(ctrl)
 			c := &Client{netlink: mockNetlink,
-				networkConfig: tt.networkConfig,
-				nodeConfig:    tt.nodeConfig,
+				networkConfig:       tt.networkConfig,
+				nodeConfig:          tt.nodeConfig,
+				serviceCIDRProvider: mockServiceCIDRProvider,
 			}
 			tt.expectedCalls(mockNetlink.EXPECT())
+			mockServiceCIDRProvider.EXPECT().AddEventHandler(gomock.Any())
 			assert.NoError(t, c.initServiceIPRoutes())
 		})
 	}
@@ -622,7 +678,7 @@ func TestReconcile(t *testing.T) {
 		{IP: net.ParseIP("2001:ab03:cd04:55ee:100b::1")}, // non-existing podCIDR, should be deleted.
 	}, nil)
 	mockNetlink.EXPECT().NeighDel(&netlink.Neigh{IP: net.ParseIP("2001:ab03:cd04:55ee:100b::1")})
-	assert.NoError(t, c.Reconcile(podCIDRs, nil))
+	assert.NoError(t, c.Reconcile(podCIDRs))
 }
 
 func TestAddRoutes(t *testing.T) {
@@ -1242,19 +1298,27 @@ func TestDeleteNodePort(t *testing.T) {
 	}
 }
 
-func TestAddClusterIPRoute(t *testing.T) {
+func TestAddServiceCIDRRoute(t *testing.T) {
+	_, serviceIPv4CIDR1, _ := net.ParseCIDR("10.96.0.1/32")
+	_, serviceIPv4CIDR2, _ := net.ParseCIDR("10.96.0.0/28")
+	_, serviceIPv6CIDR1, _ := net.ParseCIDR("fd00:1234:5678:dead:beaf::1/128")
+	_, serviceIPv6CIDR2, _ := net.ParseCIDR("fd00:1234:5678:dead:beaf::/124")
 	nodeConfig := &config.NodeConfig{GatewayConfig: &config.GatewayConfig{LinkIndex: 10}}
 	tests := []struct {
-		name          string
-		clusterIPs    []string
-		expectedCalls func(mockNetlink *netlinktest.MockInterfaceMockRecorder)
+		name               string
+		curServiceIPv4CIDR *net.IPNet
+		curServiceIPv6CIDR *net.IPNet
+		newServiceIPv4CIDR *net.IPNet
+		newServiceIPv6CIDR *net.IPNet
+		expectedCalls      func(mockNetlink *netlinktest.MockInterfaceMockRecorder)
 	}{
 		{
-			name:       "IPv4",
-			clusterIPs: []string{"10.96.0.1", "10.96.0.10"},
+			name:               "Add route for Service IPv4 CIDR",
+			curServiceIPv4CIDR: nil,
+			newServiceIPv4CIDR: serviceIPv4CIDR1,
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteReplace(&netlink.Route{
-					Dst:       &net.IPNet{IP: net.ParseIP("10.96.0.1"), Mask: net.CIDRMask(32, 32)},
+					Dst:       &net.IPNet{IP: net.ParseIP("10.96.0.1").To4(), Mask: net.CIDRMask(32, 32)},
 					Gw:        config.VirtualServiceIPv4,
 					Scope:     netlink.SCOPE_UNIVERSE,
 					LinkIndex: 10,
@@ -1266,6 +1330,13 @@ func TestAddClusterIPRoute(t *testing.T) {
 				mockNetlink.RouteDel(&netlink.Route{
 					Dst: ip.MustParseCIDR("10.96.0.0/24"), Gw: config.VirtualServiceIPv4,
 				})
+			},
+		},
+		{
+			name:               "Update route for Service IPv4 CIDR",
+			curServiceIPv4CIDR: serviceIPv4CIDR1,
+			newServiceIPv4CIDR: serviceIPv4CIDR2,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteReplace(&netlink.Route{
 					Dst:       &net.IPNet{IP: net.ParseIP("10.96.0.0").To4(), Mask: net.CIDRMask(28, 32)},
 					Gw:        config.VirtualServiceIPv4,
@@ -1273,7 +1344,7 @@ func TestAddClusterIPRoute(t *testing.T) {
 					LinkIndex: 10,
 				})
 				mockNetlink.RouteDel(&netlink.Route{
-					Dst:       &net.IPNet{IP: net.ParseIP("10.96.0.1"), Mask: net.CIDRMask(32, 32)},
+					Dst:       &net.IPNet{IP: net.ParseIP("10.96.0.1").To4(), Mask: net.CIDRMask(32, 32)},
 					Gw:        config.VirtualServiceIPv4,
 					Scope:     netlink.SCOPE_UNIVERSE,
 					LinkIndex: 10,
@@ -1281,8 +1352,9 @@ func TestAddClusterIPRoute(t *testing.T) {
 			},
 		},
 		{
-			name:       "IPv6",
-			clusterIPs: []string{"fd00:1234:5678:dead:beaf::1", "fd00:1234:5678:dead:beaf::a"},
+			name:               "Add route for Service IPv6 CIDR",
+			curServiceIPv6CIDR: nil,
+			newServiceIPv6CIDR: serviceIPv6CIDR1,
 			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteReplace(&netlink.Route{
 					Dst:       &net.IPNet{IP: net.ParseIP("fd00:1234:5678:dead:beaf::1"), Mask: net.CIDRMask(128, 128)},
@@ -1297,6 +1369,13 @@ func TestAddClusterIPRoute(t *testing.T) {
 				mockNetlink.RouteDel(&netlink.Route{
 					Dst: ip.MustParseCIDR("fd00:1234:5678:dead:beaf::/80"), Gw: config.VirtualServiceIPv6,
 				})
+			},
+		},
+		{
+			name:               "Update route for Service IPv6 CIDR",
+			curServiceIPv6CIDR: serviceIPv6CIDR1,
+			newServiceIPv6CIDR: serviceIPv6CIDR2,
+			expectedCalls: func(mockNetlink *netlinktest.MockInterfaceMockRecorder) {
 				mockNetlink.RouteReplace(&netlink.Route{
 					Dst:       &net.IPNet{IP: net.ParseIP("fd00:1234:5678:dead:beaf::"), Mask: net.CIDRMask(124, 128)},
 					Gw:        config.VirtualServiceIPv6,
@@ -1318,13 +1397,18 @@ func TestAddClusterIPRoute(t *testing.T) {
 			defer ctrl.Finish()
 			mockNetlink := netlinktest.NewMockInterface(ctrl)
 			c := &Client{
-				netlink:    mockNetlink,
-				nodeConfig: nodeConfig,
+				netlink:         mockNetlink,
+				nodeConfig:      nodeConfig,
+				serviceIPv4CIDR: tt.curServiceIPv4CIDR,
+				serviceIPv6CIDR: tt.curServiceIPv6CIDR,
 			}
 			tt.expectedCalls(mockNetlink.EXPECT())
 
-			for _, clusterIP := range tt.clusterIPs {
-				assert.NoError(t, c.AddClusterIPRoute(net.ParseIP(clusterIP)))
+			if tt.newServiceIPv4CIDR != nil {
+				assert.NoError(t, c.addServiceCIDRRoute(tt.newServiceIPv4CIDR))
+			}
+			if tt.newServiceIPv6CIDR != nil {
+				assert.NoError(t, c.addServiceCIDRRoute(tt.newServiceIPv6CIDR))
 			}
 		})
 	}

@@ -1,6 +1,6 @@
 # antrea
 
-![Version: 1.10.0-dev](https://img.shields.io/badge/Version-1.10.0--dev-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: latest](https://img.shields.io/badge/AppVersion-latest-informational?style=flat-square)
+![Version: 1.11.0-dev](https://img.shields.io/badge/Version-1.11.0--dev-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: latest](https://img.shields.io/badge/AppVersion-latest-informational?style=flat-square)
 
 Kubernetes networking based on Open vSwitch
 
@@ -31,7 +31,7 @@ Kubernetes: `>= 1.16.0-0`
 | agent.antreaOVS.logFileMaxSize | int | `100` | Max size in MBs of any single log file. |
 | agent.antreaOVS.resources | object | `{"requests":{"cpu":"200m"}}` | Resource requests and limits for the antrea-ovs container. |
 | agent.apiPort | int | `10350` | Port for the antrea-agent APIServer to serve on. |
-| agent.dnsPolicy | string | `"ClusterFirstWithHostNet"` | DNS Policy for the antrea-agent Pods. |
+| agent.dnsPolicy | string | `""` | DNS Policy for the antrea-agent Pods. If empty, the Kubernetes default will be used. |
 | agent.enablePrometheusMetrics | bool | `true` | Enable metrics exposure via Prometheus. |
 | agent.extraVolumes | list | `[]` | Additional volumes for antrea-agent Pods. |
 | agent.installCNI.resources | object | `{"requests":{"cpu":"100m"}}` | Resource requests and limits for the install-cni initContainer. |
@@ -67,10 +67,11 @@ Kubernetes: `>= 1.16.0-0`
 | disableTXChecksumOffload | bool | `false` | Disable TX checksum offloading for container network interfaces. It's supposed to be set to true when the datapath doesn't support TX checksum offloading, which causes packets to be dropped due to bad checksum. It affects Pods running on Linux Nodes only. |
 | dnsServerOverride | string | `""` | Address of DNS server, to override the kube-dns service. It's used to resolve hostname in FQDN policy. |
 | egress.exceptCIDRs | list | `[]` | CIDR ranges to which outbound Pod traffic will not be SNAT'd by Egresses. |
+| egress.maxEgressIPsPerNode | int | `255` | The maximum number of Egress IPs that can be assigned to a Node. It's useful when the Node network restricts the number of secondary IPs a Node can have, e.g. EKS. It must not be greater than 255. |
 | enableBridgingMode | bool | `false` | Enable bridging mode of Pod network on Nodes, in which the Node's transport interface is connected to the OVS bridge. |
 | featureGates | object | `{}` | To explicitly enable or disable a FeatureGate and bypass the Antrea defaults, add an entry to the dictionary with the FeatureGate's name as the key and a boolean as the value. |
 | flowCollector.activeFlowExportTimeout | string | `"5s"` | timeout after which a flow record is sent to the collector for active flows. |
-| flowCollector.collectorAddr | string | `"flow-aggregator.flow-aggregator.svc:4739:tls"` | IPFIX collector address as a string with format <HOST>:[<PORT>][:<PROTO>]. |
+| flowCollector.collectorAddr | string | `"flow-aggregator/flow-aggregator:4739:tls"` | IPFIX collector address as a string with format <HOST>:[<PORT>][:<PROTO>]. If the collector is running in-cluster as a Service, set <HOST> to <Service namespace>/<Service name>. |
 | flowCollector.flowPollInterval | string | `"5s"` | Determines how often the flow exporter polls for new connections. |
 | flowCollector.idleFlowExportTimeout | string | `"15s"` | timeout after which a flow record is sent to the collector for idle flows. |
 | hostGateway | string | `"antrea-gw0"` | Name of the interface antrea-agent will create and use for host <-> Pod communication. |
@@ -84,7 +85,9 @@ Kubernetes: `>= 1.16.0-0`
 | logVerbosity | int | `0` |  |
 | multicast.igmpQueryInterval | string | `"125s"` | The interval at which the antrea-agent sends IGMP queries to Pods. Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h". |
 | multicast.multicastInterfaces | list | `[]` | Names of the interfaces on Nodes that are used to forward multicast traffic. |
-| multicluster.enable | bool | `false` | Enable Antrea Multi-cluster Gateway to support cross-cluster traffic. This feature is supported only with encap mode. |
+| multicluster.enableGateway | bool | `false` | Enable Antrea Multi-cluster Gateway to support cross-cluster traffic. This feature is supported only with encap mode. |
+| multicluster.enablePodToPodConnectivity | bool | `false` | Enable Multi-cluster Pod to Pod connectivity. |
+| multicluster.enableStretchedNetworkPolicy | bool | `false` | Enable Multi-cluster NetworkPolicy. Multi-cluster Gateway must be enabled to enable StretchedNetworkPolicy. |
 | multicluster.namespace | string | `""` | The Namespace where Antrea Multi-cluster Controller is running. The default is antrea-agent's Namespace. |
 | noSNAT | bool | `false` | Whether or not to SNAT (using the Node IP) the egress traffic from a Pod to the external network. |
 | nodeIPAM.clusterCIDRs | list | `[]` | CIDR ranges to use when allocating Pod IP addresses. |
@@ -97,6 +100,12 @@ Kubernetes: `>= 1.16.0-0`
 | nodePortLocal.portRange | string | `"61000-62000"` | Port range used by NodePortLocal when creating Pod port mappings. |
 | ovs.bridgeName | string | `"br-int"` | Name of the OVS bridge antrea-agent will create and use. |
 | ovs.hwOffload | bool | `false` | Enable hardware offload for the OVS bridge (required additional configuration). |
+| secondaryNetwork.ovs.datapathType | string | `"system"` | 'system' is the default value and corresponds to the kernel datapath. Use 'netdev' to run OVS in userspace mode. Userspace mode requires the tun device driver to be available. |
+| secondaryNetwork.ovs.enable | bool | `false` | Enable OVS bridge configuration for secondary network. |
+| secondaryNetwork.ovs.integrationBridgeName | string | `"br-secnet-int"` | Secondary network OVS integration bridge name. |
+| secondaryNetwork.ovs.patchPort | string | `"br-secnet-patch0"` | Name of the OVS patch port which connects the integration and transport bridge. |
+| secondaryNetwork.ovs.transportBridgeName | string | `"br-secnet-trans"` | Secondary network OVS transport bridge name. |
+| secondaryNetwork.tunnelType | string | `"geneve"` | Tunnel protocol used for encapsulating traffic across Nodes. It must be one of "geneve", "vxlan", "gre", "stt". |
 | serviceCIDR | string | `""` | IPv4 CIDR range used for Services. Required when AntreaProxy is disabled. |
 | serviceCIDRv6 | string | `""` | IPv6 CIDR range used for Services. Required when AntreaProxy is disabled. |
 | testing.coverage | bool | `false` |  |

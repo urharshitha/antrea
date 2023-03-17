@@ -25,9 +25,15 @@ import (
 // for cross-cluster traffic to distinguish from in-cluster traffic.
 var GlobalVirtualMACForMulticluster, _ = net.ParseMAC("aa:bb:cc:dd:ee:f0")
 
+// UnknownLabelIdentity represents an unknown label identity.
+// 24 bits in VNI are used for label identity. The max value is reserved for
+// UnknownLabelIdentity.
+const UnknownLabelIdentity = uint32(0xffffff)
+
 type featureMulticluster struct {
 	cookieAllocator cookie.Allocator
 	cachedFlows     *flowCategoryCache
+	cachedPodFlows  *flowCategoryCache
 	category        cookie.Category
 	ipProtocols     []binding.Protocol
 	dnatCtZones     map[binding.Protocol]int
@@ -46,6 +52,7 @@ func newFeatureMulticluster(cookieAllocator cookie.Allocator, ipProtocols []bind
 	return &featureMulticluster{
 		cookieAllocator: cookieAllocator,
 		cachedFlows:     newFlowCategoryCache(),
+		cachedPodFlows:  newFlowCategoryCache(),
 		category:        cookie.Multicluster,
 		ipProtocols:     ipProtocols,
 		snatCtZones:     snatCtZones,
@@ -65,7 +72,8 @@ func (f *featureMulticluster) l3FwdFlowToRemoteViaTun(
 	localGatewayMAC net.HardwareAddr,
 	peerServiceCIDR net.IPNet,
 	tunnelPeer net.IP,
-	remoteGatewayIP net.IP) []binding.Flow {
+	remoteGatewayIP net.IP,
+	enableStretchedNetworkPolicy bool) []binding.Flow {
 	ipProtocol := getIPProtocol(peerServiceCIDR.IP)
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	var flows []binding.Flow
@@ -97,6 +105,23 @@ func (f *featureMulticluster) l3FwdFlowToRemoteViaTun(
 			Action().GotoTable(L3DecTTLTable.GetID()).
 			Done(),
 	)
+	if enableStretchedNetworkPolicy {
+		flows = append(flows,
+			// This generates the flow to forward cross-cluster reject traffic based
+			// on Gateway IP and reg.
+			L3ForwardingTable.ofTable.BuildFlow(priorityNormal-1).
+				Cookie(cookieID).
+				MatchProtocol(ipProtocol).
+				MatchRegMark(CustomReasonRejectRegMark).
+				MatchDstIP(remoteGatewayIP).
+				Action().SetSrcMAC(localGatewayMAC).
+				Action().SetDstMAC(GlobalVirtualMACForMulticluster).
+				Action().SetTunnelDst(tunnelPeer). // Flow based tunnel. Set tunnel destination.
+				Action().LoadRegMark(ToTunnelRegMark).
+				Action().GotoTable(L3DecTTLTable.GetID()).
+				Done(),
+		)
+	}
 	return flows
 }
 
@@ -126,7 +151,7 @@ func (f *featureMulticluster) snatConntrackFlows(serviceCIDR net.IPNet, localGat
 	ipProtocol := getIPProtocol(localGatewayIP)
 	cookieID := f.cookieAllocator.Request(f.category).Raw()
 	flows = append(flows,
-		// This generates the flow to match the first packet of multicluster Service connection, and commit them into
+		// This generates the flow to match the first packet of multi-cluster Service connection, and commit them into
 		// DNAT zone to make sure DNAT is performed before SNAT for any remote cluster traffic.
 		SNATMarkTable.ofTable.BuildFlow(priorityHigh).
 			Cookie(cookieID).
@@ -160,4 +185,23 @@ func (f *featureMulticluster) snatConntrackFlows(serviceCIDR net.IPNet, localGat
 			Done(),
 	)
 	return flows
+}
+
+func (f *featureMulticluster) l3FwdFlowToPodViaTun(
+	localGatewayMAC net.HardwareAddr,
+	podIP net.IP,
+	tunnelPeer net.IP) binding.Flow {
+	ipProtocol := getIPProtocol(podIP)
+	// This generates the flow to forward cross-cluster request packets based
+	// on Pod IP.
+	return L3ForwardingTable.ofTable.BuildFlow(priorityHigh).
+		Cookie(f.cookieAllocator.Request(f.category).Raw()).
+		MatchProtocol(ipProtocol).
+		MatchDstIP(podIP).
+		MatchDstMAC(GlobalVirtualMACForMulticluster).
+		Action().SetSrcMAC(localGatewayMAC). // Rewrite src MAC to local gateway MAC.
+		Action().SetTunnelDst(tunnelPeer).   // Flow based tunnel. Set tunnel destination.
+		Action().LoadRegMark(ToTunnelRegMark).
+		Action().GotoTable(L3DecTTLTable.GetID()).
+		Done()
 }

@@ -34,14 +34,20 @@ const (
 )
 
 const (
-	VXLANOverhead     = 50
-	GeneveOverhead    = 50
-	GREOverhead       = 38
+	vxlanOverhead     = 50
+	geneveOverhead    = 50
+	greOverhead       = 38
+	ipv6ExtraOverhead = 20
+
 	WireGuardOverhead = 80
 	// IPsec ESP can add a maximum of 38 bytes to the packet including the ESP
 	// header and trailer.
-	IPSecESPOverhead  = 38
-	IPv6ExtraOverhead = 20
+	IPSecESPOverhead = 38
+)
+
+const (
+	L7NetworkPolicyTargetPortName = "antrea-l7-tap0"
+	L7NetworkPolicyReturnPortName = "antrea-l7-tap1"
 )
 
 var (
@@ -156,10 +162,6 @@ type NodeConfig struct {
 	NodeTransportIPv6Addr *net.IPNet
 	// The original MTU of the Node's transport interface.
 	NodeTransportInterfaceMTU int
-	// Set either via defaultMTU config in antrea.yaml or auto discovered.
-	// Auto discovery will use MTU value of the Node's primary interface.
-	// For Encap and Hybrid mode, Node MTU will be adjusted to account for encap header.
-	NodeMTU int
 	// TunnelOFPort is the OpenFlow port number of tunnel interface allocated by OVS. With noEncap mode, the value is 0.
 	TunnelOFPort uint32
 	// HostInterfaceOFPort is the OpenFlow port number of the host interface allocated by OVS. The host interface is the
@@ -199,18 +201,50 @@ type NetworkConfig struct {
 	TransportIfaceCIDRs   []string
 	IPv4Enabled           bool
 	IPv6Enabled           bool
+	// MTUDeduction only counts IPv4 tunnel overhead, no IPsec and WireGuard overhead.
+	MTUDeduction int
+	// Set by the defaultMTU config option or auto discovered.
+	// Auto discovery will use MTU value of the Node's transport interface.
+	// For Encap and Hybrid mode, InterfaceMTU will be adjusted to account for
+	// encap header.
+	InterfaceMTU         int
+	EnableMulticlusterGW bool
 }
 
-// IsIPv4Enabled returns true if the cluster network supports IPv4.
-func IsIPv4Enabled(nodeConfig *NodeConfig, trafficEncapMode TrafficEncapModeType) bool {
-	return nodeConfig.PodIPv4CIDR != nil ||
-		(trafficEncapMode.IsNetworkPolicyOnly() && nodeConfig.NodeIPv4Addr != nil)
+// IsIPv4Enabled returns true if the cluster network supports IPv4. Legal cases are:
+// - NetworkPolicyOnly, NodeIPv4Addr != nil, IPv4 is enabled
+// - NetworkPolicyOnly, NodeIPv4Addr == nil, IPv4 is disabled
+// - Non-NetworkPolicyOnly, PodIPv4CIDR != nil, NodeIPv4Addr != nil, IPv4 is enabled
+// - Non-NetworkPolicyOnly, PodIPv4CIDR == nil, IPv4 is disabled
+func IsIPv4Enabled(nodeConfig *NodeConfig, trafficEncapMode TrafficEncapModeType) (bool, error) {
+	if trafficEncapMode.IsNetworkPolicyOnly() {
+		return nodeConfig.NodeIPv4Addr != nil, nil
+	}
+	if nodeConfig.PodIPv4CIDR != nil {
+		if nodeConfig.NodeIPv4Addr != nil {
+			return true, nil
+		}
+		return false, fmt.Errorf("K8s Node should have an IPv4 address if IPv4 Pod CIDR is defined")
+	}
+	return false, nil
 }
 
-// IsIPv6Enabled returns true if the cluster network supports IPv6.
-func IsIPv6Enabled(nodeConfig *NodeConfig, trafficEncapMode TrafficEncapModeType) bool {
-	return nodeConfig.PodIPv6CIDR != nil ||
-		(trafficEncapMode.IsNetworkPolicyOnly() && nodeConfig.NodeIPv6Addr != nil)
+// IsIPv6Enabled returns true if the cluster network supports IPv6. Legal cases are:
+// - NetworkPolicyOnly, NodeIPv6Addr != nil, IPv6 is enabled
+// - NetworkPolicyOnly, NodeIPv6Addr == nil, IPv6 is disabled
+// - Non-NetworkPolicyOnly, PodIPv6CIDR != nil, NodeIPv6Addr != nil, IPv6 is enabled
+// - Non-NetworkPolicyOnly, PodIPv6CIDR == nil, IPv6 is disabled
+func IsIPv6Enabled(nodeConfig *NodeConfig, trafficEncapMode TrafficEncapModeType) (bool, error) {
+	if trafficEncapMode.IsNetworkPolicyOnly() {
+		return nodeConfig.NodeIPv6Addr != nil, nil
+	}
+	if nodeConfig.PodIPv6CIDR != nil {
+		if nodeConfig.NodeIPv6Addr != nil {
+			return true, nil
+		}
+		return false, fmt.Errorf("K8s Node should have an IPv6 address if IPv6 Pod CIDR is defined")
+	}
+	return false, nil
 }
 
 // NeedsTunnelToPeer returns true if Pod traffic to peer Node needs to be encapsulated by OVS tunneling.
@@ -221,9 +255,33 @@ func (nc *NetworkConfig) NeedsTunnelToPeer(peerIP net.IP, localIP *net.IPNet) bo
 	return nc.TrafficEncapMode == TrafficEncapModeEncap || (nc.TrafficEncapMode == TrafficEncapModeHybrid && !localIP.Contains(peerIP))
 }
 
+func (nc *NetworkConfig) NeedsTunnelInterface() bool {
+	return nc.TrafficEncapMode.SupportsEncap() || nc.EnableMulticlusterGW
+}
+
 // NeedsDirectRoutingToPeer returns true if Pod traffic to peer Node needs a direct route installed to the routing table.
 func (nc *NetworkConfig) NeedsDirectRoutingToPeer(peerIP net.IP, localIP *net.IPNet) bool {
 	return (nc.TrafficEncapMode == TrafficEncapModeNoEncap || nc.TrafficEncapMode == TrafficEncapModeHybrid) && localIP.Contains(peerIP)
+}
+
+func (nc *NetworkConfig) CalculateMTUDeduction(isIPv6 bool) int {
+	var mtuDeduction int
+	// When Multi-cluster Gateway is enabled, we need to reduce MTU for potential cross-cluster traffic.
+	if nc.TrafficEncapMode.SupportsEncap() || nc.EnableMulticlusterGW {
+		if nc.TunnelType == ovsconfig.VXLANTunnel {
+			mtuDeduction = vxlanOverhead
+		} else if nc.TunnelType == ovsconfig.GeneveTunnel {
+			mtuDeduction = geneveOverhead
+		} else if nc.TunnelType == ovsconfig.GRETunnel {
+			mtuDeduction = greOverhead
+		}
+	}
+
+	if nc.TrafficEncapMode.SupportsEncap() && isIPv6 {
+		mtuDeduction += ipv6ExtraOverhead
+	}
+	nc.MTUDeduction = mtuDeduction
+	return mtuDeduction
 }
 
 // ServiceConfig includes K8s Service CIDR and available IP addresses for NodePort.
@@ -232,4 +290,10 @@ type ServiceConfig struct {
 	ServiceCIDRv6         *net.IPNet // K8s Service ClusterIP CIDR in IPv6
 	NodePortAddressesIPv4 []net.IP
 	NodePortAddressesIPv6 []net.IP
+}
+
+// L7NetworkPolicyConfig includes target and return ofPorts for L7 NetworkPolicy.
+type L7NetworkPolicyConfig struct {
+	TargetOFPort uint32 // Matched L7 NetworkPolicy traffic is forwarded to an application-aware engine via this ofPort.
+	ReturnOFPort uint32 // Scanned L7 NetworkPolicy traffic is returned from an application-aware engine via this ofPort.
 }

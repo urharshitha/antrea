@@ -207,6 +207,7 @@ type podInfo struct {
 
 // TestData stores the state required for each test case.
 type TestData struct {
+	ClusterName        string
 	provider           providers.ProviderInterface
 	kubeConfig         *restclient.Config
 	clientset          kubernetes.Interface
@@ -1117,6 +1118,8 @@ func getImageName(uri string) string {
 type PodBuilder struct {
 	Name               string
 	Namespace          string
+	VolumeMounts       []corev1.VolumeMount
+	Volumes            []corev1.Volume
 	Image              string
 	ContainerName      string
 	Command            []string
@@ -1212,6 +1215,31 @@ func (b *PodBuilder) WithResources(ResourceRequests, ResourceLimits corev1.Resou
 	return b
 }
 
+func (b *PodBuilder) AddVolume(volume []corev1.Volume) *PodBuilder {
+	b.Volumes = volume
+	return b
+}
+
+func (b *PodBuilder) AddVolumeMount(volumeMount []corev1.VolumeMount) *PodBuilder {
+	b.VolumeMounts = volumeMount
+	return b
+}
+
+func (b *PodBuilder) MountConfigMap(configMapName string, mountPath string, volumeName string) *PodBuilder {
+	volumeMount := corev1.VolumeMount{Name: volumeName, MountPath: mountPath}
+	volume := corev1.Volume{
+		Name: volumeName,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: configMapName,
+				},
+			},
+		},
+	}
+	return b.AddVolume([]corev1.Volume{volume}).AddVolumeMount([]corev1.VolumeMount{volumeMount})
+}
+
 func (b *PodBuilder) Create(data *TestData) error {
 	containerName := b.ContainerName
 	if containerName == "" {
@@ -1234,8 +1262,10 @@ func (b *PodBuilder) Create(data *TestData) error {
 				SecurityContext: &corev1.SecurityContext{
 					Privileged: &b.IsPrivileged,
 				},
+				VolumeMounts: b.VolumeMounts,
 			},
 		},
+		Volumes:            b.Volumes,
 		RestartPolicy:      corev1.RestartPolicyNever,
 		HostNetwork:        b.HostNetwork,
 		ServiceAccountName: b.ServiceAccountName,
@@ -1271,6 +1301,20 @@ func (b *PodBuilder) Create(data *TestData) error {
 	}
 	if _, err := data.clientset.CoreV1().Pods(b.Namespace).Create(context.TODO(), pod, metav1.CreateOptions{}); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (data *TestData) UpdatePod(namespace, name string, mutateFunc func(*corev1.Pod)) error {
+	pod, err := data.clientset.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("error when getting '%s/%s' Pod: %v", namespace, name, err)
+	}
+	if mutateFunc != nil {
+		mutateFunc(pod)
+	}
+	if _, err := data.clientset.CoreV1().Pods(namespace).Update(context.TODO(), pod, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("error when updating '%s/%s' Pod: %v", namespace, name, err)
 	}
 	return nil
 }
@@ -1347,7 +1391,7 @@ func (data *TestData) DeletePod(namespace, name string) error {
 
 // Deletes a Pod in the test namespace then waits us to timeout for the Pod not to be visible to the
 // client anymore.
-func (data *TestData) deletePodAndWait(timeout time.Duration, name string, ns string) error {
+func (data *TestData) DeletePodAndWait(timeout time.Duration, name string, ns string) error {
 	if err := data.DeletePod(ns, name); err != nil {
 		return err
 	}
@@ -1755,8 +1799,8 @@ func (data *TestData) createAgnhostNodePortService(serviceName string, affinity,
 }
 
 // createNginxNodePortService creates a NodePort nginx service with the given name.
-func (data *TestData) createNginxNodePortService(serviceName string, affinity, nodeLocalExternal bool, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
-	return data.CreateService(serviceName, data.testNamespace, 80, 80, map[string]string{"app": "nginx"}, affinity, nodeLocalExternal, corev1.ServiceTypeNodePort, ipFamily)
+func (data *TestData) createNginxNodePortService(serviceName, namespace string, affinity, nodeLocalExternal bool, ipFamily *corev1.IPFamily) (*corev1.Service, error) {
+	return data.CreateService(serviceName, namespace, 80, 80, map[string]string{"app": "nginx"}, affinity, nodeLocalExternal, corev1.ServiceTypeNodePort, ipFamily)
 }
 
 func (data *TestData) updateServiceExternalTrafficPolicy(serviceName string, nodeLocalExternal bool) (*corev1.Service, error) {

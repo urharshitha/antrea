@@ -39,6 +39,8 @@ const (
 	multiClusterTestNamespace string = "antrea-multicluster-test"
 	eastClusterTestService    string = "east-nginx"
 	westClusterTestService    string = "west-nginx"
+	mcEastClusterTestService  string = "antrea-mc-east-nginx"
+	mcWestClusterTestService  string = "antrea-mc-west-nginx"
 	eastCluster               string = "east-cluster"
 	westCluster               string = "west-cluster"
 	leaderCluster             string = "leader-cluster"
@@ -87,7 +89,7 @@ func (data *MCTestData) createClients() error {
 	}
 	data.clusterTestDataMap = map[string]antreae2e.TestData{}
 	for i, cluster := range data.clusters {
-		testData := antreae2e.TestData{}
+		testData := antreae2e.TestData{ClusterName: cluster}
 		if err := testData.CreateClient(kubeConfigPaths[i]); err != nil {
 			return fmt.Errorf("error initializing clients for cluster %s: %v", cluster, err)
 		}
@@ -139,6 +141,15 @@ func (data *MCTestData) deletePod(clusterName, namespace, name string) error {
 	return nil
 }
 
+func (data *MCTestData) deletePodAndWait(clusterName, namespace, name string) error {
+	if d, ok := data.clusterTestDataMap[clusterName]; ok {
+		if err := d.DeletePodAndWait(defaultTimeout, namespace, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (data *MCTestData) deleteService(clusterName, namespace, name string) error {
 	if d, ok := data.clusterTestDataMap[clusterName]; ok {
 		if err := d.DeleteService(namespace, name); err != nil {
@@ -168,6 +179,26 @@ func (data *MCTestData) createPod(clusterName, name, nodeName, namespace, ctrNam
 	return fmt.Errorf("clusterName %s not found", clusterName)
 }
 
+func (data *MCTestData) updatePod(clusterName string, namespace, name string, mutateFunc func(*corev1.Pod)) error {
+	if d, ok := data.clusterTestDataMap[clusterName]; ok {
+		if err := d.UpdatePod(namespace, name, mutateFunc); err != nil {
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("clusterName %s not found", clusterName)
+}
+
+func (data *MCTestData) updateNamespace(clusterName string, namespace string, mutateFunc func(*corev1.Namespace)) error {
+	if d, ok := data.clusterTestDataMap[clusterName]; ok {
+		if err := d.UpdateNamespace(namespace, mutateFunc); err != nil {
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("clusterName %s not found", clusterName)
+}
+
 func (data *MCTestData) createService(clusterName, serviceName, namespace string, port int32, targetPort int32,
 	protocol corev1.Protocol, selector map[string]string, affinity bool, nodeLocalExternal bool, serviceType corev1.ServiceType,
 	ipFamily *corev1.IPFamily, annotation map[string]string) (*corev1.Service, error) {
@@ -192,6 +223,21 @@ func (data *MCTestData) createOrUpdateANP(clusterName string, anp *crdv1alpha1.N
 func (data *MCTestData) deleteANP(clusterName, namespace, name string) error {
 	if d, ok := data.clusterTestDataMap[clusterName]; ok {
 		return d.DeleteANP(namespace, name)
+	}
+	return fmt.Errorf("clusterName %s not found", clusterName)
+}
+
+func (data *MCTestData) createOrUpdateACNP(clusterName string, acnp *crdv1alpha1.ClusterNetworkPolicy) (*crdv1alpha1.ClusterNetworkPolicy, error) {
+	if d, ok := data.clusterTestDataMap[clusterName]; ok {
+		return d.CreateOrUpdateACNP(acnp)
+	}
+	return nil, fmt.Errorf("clusterName %s not found", clusterName)
+}
+
+// deleteACNP is a convenience function for deleting ACNP by name.
+func (data *MCTestData) deleteACNP(clusterName, name string) error {
+	if d, ok := data.clusterTestDataMap[clusterName]; ok {
+		return d.DeleteACNP(name)
 	}
 	return fmt.Errorf("clusterName %s not found", clusterName)
 }

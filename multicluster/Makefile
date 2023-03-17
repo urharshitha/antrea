@@ -26,7 +26,7 @@ DOCKER_BUILD_ARGS = --build-arg GO_VERSION=$(GO_VERSION)
 
 YEAR :=$(shell date "+%Y")
 .PHONY: all
-all: build
+all: bin
 
 ##@ General
 
@@ -76,7 +76,7 @@ test-integration: .coverage
 	$(CURDIR)/hack/mc-integration-test.sh
 ##@ Build
 
-build: fmt vet ## Build manager binary.
+bin: fmt vet ## Build manager binary.
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/antrea-mc-controller antrea.io/antrea/multicluster/cmd/...
 
 .PHONY: antrea-mc-instr-binary
@@ -94,6 +94,11 @@ controller-gen: ## Download controller-gen locally if necessary.
 
 codegen:
 	./hack/update-codegen.sh
+
+.PHONY: mockgen
+mockgen:
+	@echo "===> Updating generated mock code <==="
+	$(CURDIR)/hack/update-codegen.sh mockgen
 
 # go-get-tool will 'go get' any package $2 and install it to $1.
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
